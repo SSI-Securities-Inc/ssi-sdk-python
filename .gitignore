@@ -153,6 +153,8 @@ activemq-data/
 .venv
 env/
 venv/
+tests/
+docs/
 ENV/
 env.bak/
 venv.bak/
@@ -216,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.python-version
+BUILD.md
+CLAUDE.md
+REFERENCE_VI.md
+REFERENCE_EN.md
+fastconnect-sdk-python.md
