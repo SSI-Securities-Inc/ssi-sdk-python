@@ -1374,7 +1374,3 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `Stream` | `streaming` | `stream.streaming` | Streaming realtime qua WebSocket |
 
 ---
-
-## Developer Reference
-
-Xem tài liệu chi tiết tại [reference.md](reference.md).
