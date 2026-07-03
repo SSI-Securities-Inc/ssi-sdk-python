@@ -3,7 +3,7 @@
 Python SDK cho nền tảng giao dịch chứng khoán SSI. Hỗ trợ REST API và WebSocket streaming, cả đồng bộ (sync) và bất đồng bộ (async).
 
 [![PyPI version](https://img.shields.io/pypi/v/ssi-sdk?logo=pypi&logoColor=white)](https://pypi.org/project/ssi-sdk/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/ssi-sdk?logo=pypi&logoColor=white)](https://pypi.org/project/ssi-sdk/)
+[![Downloads](https://static.pepy.tech/badge/ssi-sdk/month)](https://pepy.tech/project/ssi-sdk)
 [![Python version](https://img.shields.io/pypi/pyversions/ssi-sdk?logo=python&logoColor=white)](https://pypi.org/project/ssi-sdk/)
 [![License](https://img.shields.io/github/license/SSI-Securities-Inc/ssi-sdk-python)](https://github.com/SSI-Securities-Inc/ssi-sdk-python/blob/main/LICENSE)
 
