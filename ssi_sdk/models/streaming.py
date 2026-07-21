@@ -12,6 +12,8 @@ from ssi_sdk.enums import (
     StreamingChannel,
     StreamingMethod,
     StreamingType,
+    FCOType,
+    FCOStatus,
 )
 from ssi_sdk.utils import to_int, to_number
 
@@ -389,4 +391,52 @@ class PortfolioMessage:
             cash_balance=data.get("cashBalance", 0.0),
             stock_value=data.get("stockValue", 0.0),
             # raw=data,
+        )
+
+@dataclass
+class FCOOrderUpdateMessage:
+    """Real-time order status update (portfolio streaming)."""
+
+    fco_id: str = ""
+    process_status: FCOStatus | None = None
+    matched_quantity: int = 0
+    is_place_order: bool = False
+    symbol: str = ""
+    quantity: int = 0
+    price: str = ""
+    account_no: str = ""
+    updated_time: str = ""
+    status: str = ""
+    message: str = ""
+    username: str = ""
+    event_type: str = ""
+    type: FCOType | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> FCOOrderUpdateMessage:
+        """Build FCOOrderUpdateMessage from a streamed camelCase order-update dict.
+
+        Args:
+            data: Raw payload with keys ``fcoId``, ``processStatus``, ``matchedQuantity``,
+                ``isPlaceOrder``, ``symbol``, ``quantity``, ``price``, ``accountNo``,
+                ``updatedTime``, ``status``, ``message``, ``username``, ``eventType``,
+                ``type``, ``order``, ``attachedOrder``.
+        Returns:
+            A populated FCOOrderUpdateMessage instance.
+        """
+        return cls(
+            fco_id=data.get("fcoId", ""),
+            process_status=FCOStatus(data["processStatus"]) if data.get("processStatus") else None,
+            matched_quantity=data.get("matchedQuantity", 0),
+            is_place_order=data.get("isPlaceOrder", False),
+            symbol=data.get("symbol", ""),
+            quantity=data.get("quantity", 0),
+            price=data.get("price", 0),
+            account_no=data.get("accountNo", ""),
+            updated_time=data.get("updatedTime", ""),
+            status=data.get("status", ""),
+            message=data.get("message", ""),
+            username=data.get("username", ""),
+            event_type=data.get("eventType", ""),
+            type=FCOType(data["type"]) if data.get("type") else None,
         )

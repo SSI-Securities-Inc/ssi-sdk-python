@@ -46,6 +46,7 @@ from ssi_sdk.models.streaming import (
     QuoteMessage,
     RequestMessage,
     TradeMessage,
+    FCOOrderUpdateMessage
 )
 from ssi_sdk.models.trading import (
     CancelOrderRequest,
@@ -57,6 +58,24 @@ from ssi_sdk.models.trading import (
     PlaceOrderRequest,
     PlaceOrderResponse,
 )
+from ssi_sdk.models.fco import (
+    FCOListRequest,
+    FCOListResponse,
+    FCOInfo,
+    FCOParams,
+    FCOOrderBookRequest,
+    FCOOrder,
+    FCOOrderBookResponse,
+    FCOPlaceResponse,
+    FCOCancelRequest,
+    FCOCancelResponse,
+    GTDParams,
+    StopParams,
+    TrailingStopParams,
+    OCOParams,
+    BullBearParams,
+)
+
 
 __all__ = [
     # -------------------------------------------------------------------------
@@ -116,6 +135,24 @@ __all__ = [
     "MaxBuySellRequest",
     "MaxBuySellResponse",
     # -------------------------------------------------------------------------
+    # FCO models
+    # -------------------------------------------------------------------------
+    "FCOListRequest",
+    "FCOListResponse",
+    "FCOInfo",
+    "FCOParams",
+    "FCOOrderBookRequest",
+    "FCOOrder",
+    "FCOOrderBookResponse",
+    "FCOPlaceResponse",
+    "FCOCancelRequest",
+    "FCOCancelResponse",
+    "GTDParams",
+    "StopParams",
+    "TrailingStopParams",
+    "OCOParams",
+    "BullBearParams",
+    # -------------------------------------------------------------------------
     # Streaming models
     # -------------------------------------------------------------------------
     "RequestMessage",
@@ -129,6 +166,7 @@ __all__ = [
     "OddLotMessage",
     "OrderStatusMessage",
     "PortfolioMessage",
+    "FCOOrderUpdateMessage",
     # -------------------------------------------------------------------------
     # Order book models (not implemented yet)
     # -------------------------------------------------------------------------

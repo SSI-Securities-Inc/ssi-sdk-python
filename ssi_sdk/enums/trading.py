@@ -1,16 +1,17 @@
 """Trading enum for SSI."""
 
-from enum import Enum
+from ssi_sdk.enums.base import BaseEnum
 
 
-class OrderSide(Enum):
+class OrderSide(BaseEnum):
     """Enum representing order sides for SSI."""
 
     BUY = "B"
     SELL = "S"
 
 
-class OrderType(Enum):
+class OrderType(BaseEnum):
+
     """Enum representing different order types for SSI."""
 
     ATO = "ATO"
@@ -23,7 +24,7 @@ class OrderType(Enum):
     PLO = "PLO"
 
 
-class OrderStatus(Enum):
+class OrderStatus(BaseEnum):
     """Enum representing order statuses for SSI."""
 
     PENDING = "PD"
