@@ -11,6 +11,7 @@ from ssi_sdk.enums.streaming import (
     StreamingType,
 )
 from ssi_sdk.enums.timeframe import Timeframe
+from ssi_sdk.enums.fco import FCOType, FCOOperator, FCOStatus
 from ssi_sdk.enums.trading import OrderSide, OrderStatus, OrderType
 
 __all__ = [
@@ -26,4 +27,7 @@ __all__ = [
     "StreamingMethod",
     "DataTopic",
     "DataType",
+    "FCOType",
+    "FCOOperator",
+    "FCOStatus",
 ]

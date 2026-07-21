@@ -526,6 +526,20 @@ Truy cập qua `trading.trading` (client `Trading` / `AsyncTrading`).
 | | `cancel_order_by_order_id(account_no, order_id)` | `CancelOrderResponse` |
 | **Sức mua/bán** | `get_max_buy_sell(account_no, symbol, price)` | `MaxBuySellResponse` |
 | | `get_max_buy_sell_at_market_price(account_no, symbol)` | `MaxBuySellResponse` |
+| **Lệnh điều kiện** | `place_fco_gtd(account_no, symbol, side, quantity, price, price_slip, from_date, to_date)` | `FCOPlaceResponse` |
+| | `place_fco_stop(account_no, symbol, side, quantity, stop_price, operator, from_date, to_date)` | `FCOPlaceResponse` |
+| | `place_fco_stop_limit(account_no, symbol, side, quantity, price, price_slip, stop_price, operator, from_date, to_date)` | `FCOPlaceResponse` |
+| | `place_fco_trailing_stop(account_no, symbol, side, quantity, active_price, trailing_amount, from_date, to_date)` | `FCOPlaceResponse` |
+| | `place_fco_trailing_stop_limit(account_no, symbol, side, quantity, active_price, trailing_amount, price_slip, from_date, to_date)` | `FCOPlaceResponse` |
+| | `place_fco_oco(account_no, symbol, side, quantity, tp_active_price, sl_active_price, tp_price, sl_price, tp_slip, sl_slip, from_date, to_date)` | `FCOPlaceResponse` |
+| | `place_fco_bull_bear(account_no, symbol, side, quantity, price, price_slip, tp_active_price, sl_active_price, tp_price, sl_price, tp_slip, sl_slip, from_date, to_date)` | `FCOPlaceResponse` |
+| | `cancel_fco(fco_id)` | `FCOCancelResponse` |
+| | `get_fco_by_account_no(account_no, page_index, page_size)` | `FCOListResponse` |
+| | `get_fco_by_symbol(account_no, symbol, page_index, page_size)` | `FCOListResponse` |
+| | `get_fco_by_status(account_no, process_status, page_index, page_size)` | `FCOListResponse` |
+| | `get_fco_by_date(account_no, from_date, to_date, page_index, page_size)` | `FCOListResponse` |
+| | `get_fco_by_id(account_no, fco_id)` | `FCOInfo \| None` |
+| | `get_fco_order_book(fco_id, page_index, page_size)` | `FCOOrderBookResponse` |
 
 ### 5.1. Đặt lệnh
 
@@ -667,6 +681,164 @@ max_bs = trading.trading.get_max_buy_sell_at_market_price(
 
 **Trả về:** `MaxBuySellResponse` — có: `account_no`, `symbol`, `max_buy_quantity`, `max_sell_quantity`, `margin_ratio`, `purchase_power`
 
+### 5.5. Giao dịch điều kiện (FCO)
+
+Hỗ trợ các loại lệnh điều kiện linh hoạt (Flexible Conditional Order) bao gồm GTD, Stop, Stop Limit, Trailing Stop, Trailing Stop Limit, OCO, và Bull Bear. Cả hai client đồng bộ (`Trading`) và bất đồng bộ (`AsyncTrading`) đều được hỗ trợ.
+
+#### 5.5.1 Đặt lệnh điều kiện (Đồng bộ - Sync)
+```python
+from ssi_sdk.enums import OrderSide, OrderType, FCOOperator
+
+# 1. Đặt lệnh GTD (Good Till Date)
+gtd_res = trading.trading.place_fco_gtd(
+    account_no="1234561",
+    symbol="SSI",
+    side=OrderSide.BUY,
+    quantity=100,
+    price=OrderType.MTL,        # Hoặc giá số cụ thể
+    price_slip=0.5,
+    from_date="2026/07/21 00:00:00",
+    to_date="2026/07/28 23:00:00"
+)
+
+# 2. Đặt lệnh Stop (Dừng thị trường)
+stop_res = trading.trading.place_fco_stop(
+    account_no="1234561",
+    symbol="SSI",
+    side=OrderSide.BUY,
+    quantity=100,
+    stop_price=20000,
+    operator=FCOOperator.GREATER_OR_EQUAL,
+    from_date="2026/07/21 00:00:00",
+    to_date="2026/07/28 23:00:00"
+)
+
+# 3. Đặt lệnh Stop Limit (Dừng giới hạn)
+stop_limit_res = trading.trading.place_fco_stop_limit(
+    account_no="1234561",
+    symbol="SSI",
+    side=OrderSide.BUY,
+    quantity=100,
+    stop_price=20000,
+    price=20500,
+    price_slip=0.5,
+    operator=FCOOperator.GREATER_OR_EQUAL,
+    from_date="2026/07/21 00:00:00",
+    to_date="2026/07/28 23:00:00"
+)
+
+# 4. Đặt lệnh Trailing Stop (Xu hướng thị trường)
+ts_res = trading.trading.place_fco_trailing_stop(
+    account_no="1234561",
+    symbol="SSI",
+    side=OrderSide.BUY,
+    quantity=100,
+    active_price=20000,
+    trailing_amount=1000,
+    from_date="2026/07/21 00:00:00",
+    to_date="2026/07/28 23:00:00"
+)
+
+# 5. Đặt lệnh Trailing Stop Limit (Xu hướng giới hạn)
+tsl_res = trading.trading.place_fco_trailing_stop_limit(
+    account_no="1234561",
+    symbol="SSI",
+    side=OrderSide.BUY,
+    quantity=100,
+    active_price=20000,
+    trailing_amount=1000,
+    price_slip=500,
+    from_date="2026/07/21 00:00:00",
+    to_date="2026/07/28 23:00:00"
+)
+
+# 6. Đặt lệnh OCO (Lệnh huỷ lệnh kia)
+oco_res = trading.trading.place_fco_oco(
+    account_no="1234561",
+    symbol="SSI",
+    side=OrderSide.BUY,
+    quantity=100,
+    tp_active_price=30000,      # Giá kích hoạt chốt lời
+    sl_active_price=20000,      # Giá kích hoạt cắt lỗ
+    tp_price=OrderType.MP,
+    sl_price=OrderType.MP,
+    tp_slip=0.1,
+    sl_slip=0,
+    from_date="2026/07/21 00:00:00",
+    to_date="2026/07/28 23:00:00"
+)
+
+# 7. Đặt lệnh Bull Bear
+bb_res = trading.trading.place_fco_bull_bear(
+    account_no="1234561",
+    symbol="SSI",
+    side=OrderSide.BUY,
+    quantity=100,
+    price=25000,
+    price_slip=10,
+    tp_active_price=30000,
+    sl_active_price=20000,
+    tp_price=30000,
+    sl_price=20000,
+    tp_slip=0.1,
+    sl_slip=0,
+    from_date="2026/07/21 00:00:00",
+    to_date="2026/07/28 23:00:00"
+)
+```
+
+**Trả về:** `FCOPlaceResponse` — có: `fco_id`
+
+#### 5.5.2 Đặt lệnh điều kiện (Bất đồng bộ - Async)
+Sử dụng cú pháp `async/await` tương tự với `trading` từ `AsyncTrading`:
+```python
+# Ví dụ đặt lệnh GTD bất đồng bộ
+gtd_res = await trading.trading.place_fco_gtd(
+    account_no="1234561",
+    symbol="SSI",
+    side=OrderSide.BUY,
+    quantity=100,
+    price=OrderType.MTL,
+    price_slip=0.5,
+    from_date="2026/07/21 00:00:00",
+    to_date="2026/07/28 23:00:00"
+)
+```
+
+#### 5.5.3 Huỷ lệnh điều kiện
+```python
+# Huỷ FCO theo fco_id (Đồng bộ)
+cancel_res = trading.trading.cancel_fco(fco_id="d346f2be-e33b-42f4-afb8-270a70db8216")
+
+# Huỷ FCO theo fco_id (Bất đồng bộ)
+cancel_res = await trading.trading.cancel_fco(fco_id="d346f2be-e33b-42f4-afb8-270a70db8216")
+```
+
+**Trả về:** `FCOCancelResponse` — có: `fco_id`
+
+#### 5.5.4 Lấy danh sách và thông tin lệnh điều kiện
+```python
+# Lấy toàn bộ lệnh FCO theo tài khoản (Đồng bộ)
+fcos = trading.trading.get_fco_by_account_no(account_no="1234561")
+
+# Lấy FCO theo mã chứng khoán (Đồng bộ)
+fcos_symbol = trading.trading.get_fco_by_symbol(account_no="1234561", symbol="SSI")
+
+# Lấy FCO theo trạng thái xử lý (Đồng bộ)
+fcos_status = trading.trading.get_fco_by_status(account_no="1234561", process_status="TRIT")
+
+# Lấy FCO theo khoảng thời gian (Đồng bộ)
+fcos_date = trading.trading.get_fco_by_date(account_no="1234561", from_date="2026/07/01", to_date="2026/07/21")
+
+# Lấy một lệnh FCO cụ thể bằng ID (Đồng bộ)
+fco_info = trading.trading.get_fco_by_id(account_no="1234561", fco_id="fco-id-here")
+
+# Lấy nhật ký khớp lệnh (order book) của lệnh FCO (Đồng bộ)
+order_book = trading.trading.get_fco_order_book(fco_id="fco-id-here")
+```
+
+> **Lưu ý:** Tất cả các method truy vấn danh sách trên đều hỗ trợ gọi bất đồng bộ với cú pháp `await` tương tự. Các method hỗ trợ thêm tham số tuỳ chọn `page_index` và `page_size` để phân trang.
+
 ---
 
 ## 6. Streaming realtime
@@ -706,7 +878,7 @@ Truy cập qua `stream.streaming` (client `Stream` / `AsyncStream`). Cần gọi
 | Property | Kiểu | Mô tả |
 |----------|------|-------|
 | `on_data` | `Callable[[message], Any]` | Nhận market data (tự parse thành typed message) |
-| `on_trading` | `Callable[[OrderStatusMessage \| PortfolioMessage], Any]` | Nhận trading events |
+| `on_trading` | `Callable[[OrderStatusMessage \| FCOOrderUpdateMessage \| PortfolioMessage], Any]` | Nhận trading events |
 | `on_heartbeat` | `Callable[[HeartbeatMessage], Any]` | Nhận heartbeat |
 
 > **Lưu ý:** Tất cả subscribe/unsubscribe methods đều hỗ trợ tham số `on_response` (callback cho response message).
@@ -718,7 +890,7 @@ Truy cập qua `stream.streaming` (client `Stream` / `AsyncStream`). Cần gọi
 def on_market_data(msg):
     print(f"Market data: {msg}")
 
-# Callback nhận dữ liệu giao dịch (OrderStatusMessage | PortfolioMessage)
+# Callback nhận dữ liệu giao dịch (OrderStatusMessage | FCOOrderUpdateMessage | PortfolioMessage)
 def on_trading_data(msg):
     print(f"Trading: {msg}")
 
@@ -747,7 +919,8 @@ stream.streaming.on_heartbeat = on_heartbeat
 
 | Topic | Message Type | Mô tả |
 |-------|-------------|-------|
-| `order.*` | `OrderStatusMessage` | Trạng thái lệnh |
+| `order.*` | `OrderStatusMessage` | Trạng thái lệnh thường |
+| | `FCOOrderUpdateMessage` | Trạng thái lệnh điều kiện (khi `eventType == "fcoEvent"`) |
 | `portfolio.*` | `PortfolioMessage` | Thay đổi danh mục |
 
 ### 6.2. Subscribe dữ liệu thị trường
@@ -1000,6 +1173,42 @@ from ssi_sdk.enums import OrderSide, OrderType, OrderStatus, Board, AccountType,
 | `WEEK_1` | `"1w"` | 1 tuần |
 | `MONTH_1` | `"1M"` | 1 tháng |
 
+#### `FCOType`
+
+| Giá trị | Value | Mô tả |
+|---------|-------|-------|
+| `GTD` | `"gtd"` | Lệnh có hiệu lực đến ngày (Good Till Date) |
+| `STOP` | `"stop"` | Lệnh dừng thị trường (Stop Market) |
+| `STOP_LIMIT` | `"stop_limit"` | Lệnh dừng giới hạn (Stop Limit) |
+| `TRAILING_STOP` | `"trailing_stop"` | Lệnh xu hướng (Trailing Stop Market) |
+| `TRAILING_STOP_LIMIT` | `"trailing_stop_limit"` | Lệnh xu hướng giới hạn (Trailing Stop Limit) |
+| `OCO` | `"oco"` | Lệnh huỷ lệnh còn lại (One Cancels the Other) |
+| `BULL_BEAR` | `"bullbear"` | Lệnh Bull Bear |
+
+#### `FCOOperator`
+
+| Giá trị | Value | Mô tả |
+|---------|-------|-------|
+| `GREATER` | `"greater"` | Lớn hơn (`>`) |
+| `GREATER_OR_EQUAL` | `"greater_or_equal"` | Lớn hơn hoặc bằng (`>=`) |
+| `LESSER` | `"lesser"` | Nhỏ hơn (`<`) |
+| `LESSER_OR_EQUAL` | `"lesser_or_equal"` | Nhỏ hơn hoặc bằng (`<=`) |
+| `EQUAL` | `"equal"` | Bằng (`=`) |
+
+#### `FCOStatus`
+
+| Giá trị | Value | Mô tả |
+|---------|-------|-------|
+| `INIT` | `"INIT"` | Mới khởi tạo |
+| `WAIT` | `"WAIT"` | Chờ kích hoạt |
+| `TRI` | `"TRI"` | Đã kích hoạt |
+| `TRIT` | `"TRIT"` | Đã kích hoạt thành công |
+| `TER` | `"TER"` | Đã kết thúc |
+| `FIS` | `"FIS"` | Hoàn tất |
+| `WC` | `"WC"` | Chờ huỷ |
+| `EXP` | `"EXP"` | Hết hạn |
+| `ERR` | `"ERR"` | Lỗi |
+
 ---
 
 ### Models
@@ -1250,6 +1459,99 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `margin_ratio` | `str` | Tỷ lệ ký quỹ |
 | `purchase_power` | `str` | Sức mua |
 
+#### Conditional Orders (FCO)
+
+**`FCOPlaceResponse`** — Kết quả đặt lệnh điều kiện
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `fco_id` | `str` | Mã định danh lệnh điều kiện |
+
+**`FCOCancelResponse`** — Kết quả huỷ lệnh điều kiện
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `fco_id` | `str` | Mã định danh lệnh điều kiện đã huỷ |
+
+**`FCOListResponse`** — Danh sách lệnh điều kiện (Phân trang)
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `page_index` | `int` | Trang hiện tại |
+| `page_size` | `int` | Kích thước trang |
+| `items_count` | `int` | Tổng số lượng bản ghi |
+| `pages_count` | `int` | Tổng số trang |
+| `fco_list` | `list[FCOInfo]` | Danh sách lệnh FCO |
+
+**`FCOInfo`** — Thông tin chi tiết một lệnh điều kiện
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `fco_id` | `str` | Mã lệnh FCO |
+| `client_id` | `str` | Username / Client ID |
+| `account_no` | `str` | Số tài khoản |
+| `quantity` | `int` | Khối lượng đặt |
+| `price` | `str` | Giá đặt |
+| `price_slip` | `str` | Độ trượt giá |
+| `symbol` | `str` | Mã chứng khoán |
+| `type` | `FCOType \| None` | Loại lệnh điều kiện |
+| `from_date` | `str` | Ngày bắt đầu hiệu lực |
+| `to_date` | `str` | Ngày kết thúc hiệu lực |
+| `matched_quantity` | `int` | Khối lượng đã khớp |
+| `is_place_order` | `bool` | Đã đẩy lệnh vào sổ hay chưa |
+| `status` | `FCOStatus \| None` | Trạng thái lệnh FCO |
+| `detail` | `str` | Chi tiết trạng thái |
+| `params` | `FCOParams \| None` | Tham số kích hoạt lệnh FCO |
+
+**`FCOParams`** — Tham số kích hoạt của lệnh điều kiện
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `stop_price` | `float \| None` | Giá dừng / giá kích hoạt |
+| `side` | `OrderSide \| None` | Chiều lệnh (Mua/Bán) |
+| `active_price` | `float \| None` | Giá kích hoạt (Trailing Stop) |
+| `trailing_amount` | `float \| None` | Khoảng bám sát (Trailing Amount) |
+| `tp_active_price` | `float \| None` | Giá kích hoạt chốt lời (Take Profit) |
+| `sl_active_price` | `float \| None` | Giá kích hoạt cắt lỗ (Stop Loss) |
+| `tp_price` | `str \| None` | Giá chốt lời |
+| `sl_price` | `str \| None` | Giá cắt lỗ |
+| `tp_slip` | `float \| None` | Trượt giá chốt lời |
+| `sl_slip` | `float \| None` | Trượt giá cắt lỗ |
+| `operator` | `FCOOperator \| None` | Toán tử so sánh kích hoạt |
+
+**`FCOOrderBookResponse`** — Nhật ký khớp lệnh FCO (Phân trang)
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `page_index` | `int` | Trang hiện tại |
+| `page_size` | `int` | Kích thước trang |
+| `items_count` | `int` | Tổng số lượng bản ghi |
+| `pages_count` | `int` | Tổng số trang |
+| `order_book` | `list[FCOOrder]` | Danh sách nhật ký lệnh FCO |
+
+**`FCOOrder`** — Nhật ký giao dịch / thực thi của lệnh FCO
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `fco_id` | `str` | Mã lệnh FCO gốc |
+| `account_no` | `str` | Số tài khoản |
+| `quantity` | `float` | Khối lượng |
+| `price` | `str` | Giá đặt |
+| `symbol` | `str` | Mã chứng khoán |
+| `side` | `OrderSide \| None` | Chiều lệnh |
+| `order_type` | `OrderType \| None` | Loại lệnh con |
+| `is_main_order` | `bool` | Là lệnh chính |
+| `is_attached_order` | `bool` | Là lệnh kèm theo |
+| `created_time` | `str` | Thời gian tạo |
+| `updated_time` | `str` | Thời gian cập nhật |
+| `unique_id` | `str` | ID duy nhất |
+| `order_id` | `str` | Mã lệnh trên sàn |
+| `matched_quantity` | `float` | Khối lượng đã khớp |
+| `os_quantity` | `float` | Khối lượng chờ khớp |
+| `avg_price` | `float` | Giá khớp trung bình |
+| `status` | `OrderStatus \| None` | Trạng thái lệnh con |
+| `detail` | `str` | Chi tiết |
+
 #### Streaming Messages
 
 **`TradeMessage`** — Dữ liệu khớp lệnh
@@ -1342,6 +1644,25 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `status` | `OrderStatus \| None` | Trạng thái |
 | `input_time` / `modify_time` | `str` | Thời gian đặt / sửa |
 | `message` | `str` | Thông báo |
+
+**`FCOOrderUpdateMessage`** — Cập nhật trạng thái lệnh điều kiện FCO (streaming)
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `fco_id` | `str` | Mã lệnh FCO |
+| `process_status` | `FCOStatus \| None` | Trạng thái xử lý lệnh FCO (`INIT`, `WAIT`, `WC`, `TER`, ...) |
+| `matched_quantity` | `int` | Khối lượng đã khớp |
+| `is_place_order` | `bool` | Đã đẩy lệnh vào sổ hay chưa |
+| `symbol` | `str` | Mã chứng khoán |
+| `quantity` | `int` | Khối lượng đặt |
+| `price` | `str` | Giá đặt |
+| `account_no` | `str` | Số tài khoản |
+| `updated_time` | `str` | Thời gian cập nhật (`YYYY/MM/DD HH:MM:SS`) |
+| `status` | `str` | Mã trạng thái |
+| `message` | `str` | Thông báo chi tiết / lý do kích hoạt, ngắt kết nối |
+| `username` | `str` | Username đặt lệnh |
+| `event_type` | `str` | Loại sự kiện (`"fcoEvent"`) |
+| `type` | `FCOType \| None` | Loại lệnh điều kiện (`GTD`, `STOP`, ...) |
 
 **`PortfolioMessage`** — Thay đổi danh mục (streaming)
 

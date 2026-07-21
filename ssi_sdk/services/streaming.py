@@ -26,6 +26,7 @@ from ssi_sdk.models import (
     QuoteMessage,
     RequestMessage,
     TradeMessage,
+    FCOOrderUpdateMessage,
 )
 from ssi_sdk.models.streaming import IntervalMessage
 from ssi_sdk.transport.websocket_client import AsyncWebSocketClient, WebSocketClient
@@ -43,6 +44,7 @@ def _wrap_data_callback(callback: Callable) -> Callable:
 
     def _wrap(msg: dict) -> Any:
         topic: str = msg.get("topic", "")
+        logger.debug(f"DATA RAW: {msg}")
         if topic.startswith(DataTopic.TRADE.value):
             if any(topic.endswith(f"@{tf.value}") for tf in Timeframe):
                 return callback(IntervalMessage.from_dict(msg.get("data", {})))
@@ -67,8 +69,12 @@ def _wrap_trading_callback(callback: Callable) -> Callable:
 
     def _wrap(msg: dict) -> Any:
         topic: str = msg.get("topic", "")
+        logger.debug(f"TRADING RAW: {msg}")
         if topic.startswith("order."):
-            return callback(OrderStatusMessage.from_dict(msg.get("data", {})))
+            if msg.get("data", {}).get("eventType") == "fcoEvent":
+                return callback(FCOOrderUpdateMessage.from_dict(msg.get("data", {})))
+            else:
+                return callback(OrderStatusMessage.from_dict(msg.get("data", {})))
         if topic.startswith("portfolio."):
             return callback(PortfolioMessage.from_dict(msg.get("data", {})))
         return callback(msg)

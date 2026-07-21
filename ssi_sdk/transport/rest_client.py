@@ -15,6 +15,8 @@ from ssi_sdk.constant import (
     HEADER_AUTHORIZATION,
     HEADER_CONTENT_TYPE,
     HEADER_RETRY_AFTER,
+    HEADER_USER_AGENT,
+    DEFAULT_USER_AGENT,
 )
 from ssi_sdk.enums import HTTPStatus
 from ssi_sdk.exceptions import APIError, AuthenticationError, RateLimitError
@@ -76,6 +78,7 @@ class AsyncRestClient:
         self._headers: dict = {
             HEADER_CONTENT_TYPE: CONTENT_TYPE_JSON,
             HEADER_ACCEPT: CONTENT_TYPE_JSON,
+            HEADER_USER_AGENT: DEFAULT_USER_AGENT,
         }
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -236,6 +239,7 @@ class RestClient:
         self._headers: dict = {
             HEADER_CONTENT_TYPE: CONTENT_TYPE_JSON,
             HEADER_ACCEPT: CONTENT_TYPE_JSON,
+            HEADER_USER_AGENT: DEFAULT_USER_AGENT,
         }
 
     def _get_client(self) -> httpx.Client:

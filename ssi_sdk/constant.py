@@ -22,8 +22,10 @@ HEADER_ACCEPT = "Accept"
 HEADER_AUTHORIZATION = "Authorization"
 HEADER_RETRY_AFTER = "Retry-After"
 HEADER_SIGNATURE = "X-Signature"
+HEADER_USER_AGENT = "User-Agent"
 CONTENT_TYPE_JSON = "application/json"
 AUTH_SCHEME_BEARER = "Bearer "
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # ---------------------------------------------------------------------------
 # API Endpoints — Base URLs
@@ -54,6 +56,9 @@ EP_DATA_SECURITIES_SUMMARY = "/api/v3/data/securitiesSummary"
 # ---------------------------------------------------------------------------
 EP_TRADING_ORDER = "/api/v3/trading/order"
 EP_TRADING_MAX_BUY_SELL = "/api/v3/trading/maxBuySell"
+EP_TRADING_FCO_ORDER = "/api/v3/trading/fco/order"
+EP_TRADING_FCO_LIST = "/api/v3/trading/fco/list"
+EP_TRADING_FCO_ORDER_BOOK = "/api/v3/trading/fco/orderbook"
 
 # ---------------------------------------------------------------------------
 # API Endpoints — Portfolio & Account
