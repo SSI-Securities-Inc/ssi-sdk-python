@@ -35,9 +35,10 @@ Facade Client (Auth/Data/Trading/Stream)
 from ssi_sdk import Config
 
 config = Config(
-    consumer_id="YOUR_CONSUMER_ID",
-    consumer_secret="YOUR_CONSUMER_SECRET",
-    private_key="YOUR_RSA_PRIVATE_KEY",
+    client_id="YOUR_CLIENT_ID",
+    api_key="YOUR_API_KEY",
+    api_secret="YOUR_API_SECRET",
+    private_key="YOUR_PRIVATE_KEY",
 )
 ```
 
