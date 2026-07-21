@@ -38,7 +38,6 @@ config = Config(
     consumer_id="YOUR_CONSUMER_ID",
     consumer_secret="YOUR_CONSUMER_SECRET",
     private_key="YOUR_RSA_PRIVATE_KEY",
-    api_url="https://fc-data.ssi.com.vn",
 )
 ```
 
