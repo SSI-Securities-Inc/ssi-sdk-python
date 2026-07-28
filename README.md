@@ -442,8 +442,8 @@ Truy cập qua `trading.portfolio` (client `Trading` / `AsyncTrading`).
 ```python
 # Số dư tài khoản cơ sở
 equity_balance = trading.portfolio.get_equity_balance("1234561")
-print(f"Available cash: {equity_balance.available_cash}")
-print(f"Withdrawal: {equity_balance.withdrawal}")
+print(f"Account balance: {equity_balance.account_balance}")
+print(f"Withdrawable: {equity_balance.withdrawable}")
 
 # Số dư tài khoản phái sinh
 derivative_balance = trading.portfolio.get_derivative_balance("1234568")
@@ -1338,11 +1338,11 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | Trường | Kiểu | Mô tả |
 |--------|------|-------|
 | `account_no` | `str` | Số tài khoản |
-| `available_cash` | `float` | Tiền mặt khả dụng |
+| `account_balance` | `float` | Số dư tài khoản |
 | `total_debt` | `float` | Tổng nợ |
 | `interest_loan` | `float` | Lãi vay |
 | `overdue_fee_loan` | `float` | Phí vay quá hạn |
-| `withdrawal` | `float` | Rút tiền |
+| `withdrawable` | `float` | Tiền rút được |
 | `on_hold_cash` | `float` | Tiền tạm giữ |
 | `sell_unmatched` | `float` | Bán chưa khớp |
 | `sell_t0` / `sell_t1` / `sell_t2` | `float` | Bán T+0/1/2 |
@@ -1350,12 +1350,6 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `buy_t0` / `buy_t1` / `buy_t2` | `float` | Mua T+0/1/2 |
 | `advance_cash_t0` / `advance_cash_t1` | `float` | Ứng trước T+0/1 |
 | `hold_subscription` | `float` | Giữ đăng ký |
-| `bank_balance` | `float` | Số dư ngân hàng |
-| `dividend` / `dividend_margin` | `float` | Cổ tức |
-| `block_cash` | `float` | Tiền phong toả |
-| `interest_cash` | `float` | Lãi tiền gửi |
-| `limit_t0` | `float` | Hạn mức T+0 |
-| `term_deposit` | `float` | Tiền gửi kỳ hạn |
 
 **`DerivativeAccountBalance`** — Số dư tài khoản phái sinh
 
