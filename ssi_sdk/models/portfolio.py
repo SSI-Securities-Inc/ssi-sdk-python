@@ -33,11 +33,11 @@ class EquityAccountBalance:
     """Equity account balance information."""
 
     account_no: str = ""
-    available_cash: float = 0.0
+    account_balance: float = 0.0
     total_debt: float = 0.0
     interest_loan: float = 0.0
     overdue_fee_loan: float = 0.0
-    withdrawal: float = 0.0
+    withdrawable: float = 0.0
     on_hold_cash: float = 0.0
     sell_unmatched: float = 0.0
     sell_t0: float = 0.0
@@ -50,13 +50,6 @@ class EquityAccountBalance:
     advance_cash_t0: float = 0.0
     advance_cash_t1: float = 0.0
     hold_subscription: float = 0.0
-    bank_balance: float = 0.0
-    dividend: float = 0.0
-    dividend_margin: float = 0.0
-    block_cash: float = 0.0
-    interest_cash: float = 0.0
-    limit_t0: float = 0.0
-    term_deposit: float = 0.0
 
     @classmethod
     def from_dict(cls, data: dict) -> EquityAccountBalance:
@@ -64,17 +57,17 @@ class EquityAccountBalance:
 
         Args:
             data: Equity balance payload with camelCase keys (e.g. ``accountNo``,
-                ``availableCash``); missing keys default to empty or ``0.0``.
+                ``accountBalance``); missing keys default to empty or ``0.0``.
         Returns:
             Populated EquityAccountBalance instance.
         """
         return cls(
             account_no=data.get("accountNo", ""),
-            available_cash=to_float(data.get("availableCash")),
+            account_balance=to_float(data.get("accountBalance")),
             total_debt=to_float(data.get("totalDebt")),
             interest_loan=to_float(data.get("interestLoan")),
             overdue_fee_loan=to_float(data.get("overdueFeeLoan")),
-            withdrawal=to_float(data.get("withdrawal")),
+            withdrawable=to_float(data.get("withdrawable")),
             on_hold_cash=to_float(data.get("onHoldCash")),
             sell_unmatched=to_float(data.get("sellUnmatched")),
             sell_t0=to_float(data.get("sellT0")),
@@ -87,13 +80,6 @@ class EquityAccountBalance:
             advance_cash_t0=to_float(data.get("advanceCashT0")),
             advance_cash_t1=to_float(data.get("advanceCashT1")),
             hold_subscription=to_float(data.get("holdSubscription")),
-            bank_balance=to_float(data.get("bankBalance")),
-            dividend=to_float(data.get("dividend")),
-            dividend_margin=to_float(data.get("dividendMargin")),
-            block_cash=to_float(data.get("blockCash")),
-            interest_cash=to_float(data.get("interestCash")),
-            limit_t0=to_float(data.get("limitT0")),
-            term_deposit=to_float(data.get("termDeposit")),
         )
 
 
