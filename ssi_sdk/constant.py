@@ -41,11 +41,23 @@ EP_ACCESS_TOKEN = "/api/v3/auth/token"
 EP_REFRESH_TOKEN = "/api/v3/auth/refresh"
 EP_REQUEST_OTP = "/api/v3/auth/requestOtp"
 
+# Returned while a Smart OTP push-approval hasn't been confirmed on the
+# device yet: HTTP 409 with body {"code": 401114, "msg": "Push-approval is
+# pending"}. Confirmed against SSI FastConnect UAT.
+SMART_OTP_PENDING_STATUS = 409
+SMART_OTP_PENDING_CODE = 401114
+
+# Smart OTP approval polling — max number of authenticate() attempts and the
+# delay between them.
+SMART_OTP_POLL_MAX_RETRIES = 5
+SMART_OTP_POLL_INTERVAL = 5  # seconds
+
 # ---------------------------------------------------------------------------
 # API Endpoints — Market Data
 # ---------------------------------------------------------------------------
 EP_DATA_OHLC = "/api/v3/data/ohlc"
 EP_DATA_OHLC_DOWNLOAD = "/api/v3/data/ohlc/download"
+EP_DATA_MASTER_DATA = "/api/v3/data/masterdata"
 EP_DATA_INDEX_LIST = "/api/v3/data/indexList"
 EP_DATA_INDEX_SUMMARY = "/api/v3/data/indexSummary"
 EP_DATA_SECURITIES_BY_BOARD = "/api/v3/data/securitiesByBoard"

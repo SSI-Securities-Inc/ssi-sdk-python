@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
 from ssi_sdk.config import Config
-from ssi_sdk.constant import EP_ACCESS_TOKEN, EP_REFRESH_TOKEN, EP_REQUEST_OTP
+from ssi_sdk.constant import (
+    EP_ACCESS_TOKEN,
+    EP_REFRESH_TOKEN,
+    EP_REQUEST_OTP,
+    SMART_OTP_PENDING_CODE,
+    SMART_OTP_PENDING_STATUS,
+    SMART_OTP_POLL_INTERVAL,
+    SMART_OTP_POLL_MAX_RETRIES,
+)
 from ssi_sdk.exceptions import APIError, AuthenticationError
 from ssi_sdk.models import OTPRequest, RefreshTokenRequest, Token, TokenRequest
 from ssi_sdk.transport.rest_client import AsyncRestClient, RestClient
@@ -17,21 +26,49 @@ logger = logging.getLogger("ssi_sdk.services.token_manager")
 # ── shared logic ─────────────────────────────────────────────
 
 
-def _build_auth_request(config: Config, otp: str | None = None) -> dict:
-    """Build the authentication request body from config credentials and optional OTP."""
+def _build_auth_request(
+    config: Config, otp: str | None = None, transaction_id: str | None = None
+) -> dict:
+    """Build the authentication request body from config credentials and OTP.
+
+    Args:
+        config: SDK config carrying ``api_key``/``api_secret``.
+        otp: Normal OTP code typed by the user (SMS/email).
+        transaction_id: Smart OTP transaction id, once the user approves it
+            on their device. Mutually exclusive with ``otp``.
+    """
     if not config.api_key or not config.api_secret:
-        raise AuthenticationError("api_key and api_secret are required for authentication")
+        raise AuthenticationError(
+            "api_key and api_secret are required for authentication"
+        )
+    if otp and transaction_id:
+        raise AuthenticationError("Pass only one of otp or transaction_id, not both")
     return TokenRequest(
         api_key=config.api_key,
         api_secret=config.api_secret,
         otp=otp,
+        transaction_id=transaction_id,
     ).to_dict()
+
+
+def _is_smart_otp_pending(error: AuthenticationError | APIError) -> bool:
+    """Whether an auth error means the Smart OTP approval is still pending.
+
+    Confirmed against SSI FastConnect UAT: HTTP 409 with body
+    ``{"code": 401114, "msg": "Push-approval is pending"}``.
+    """
+    if error.status_code != SMART_OTP_PENDING_STATUS:
+        return False
+    body = error.response_body
+    return isinstance(body, dict) and body.get("code") == SMART_OTP_PENDING_CODE
 
 
 def _build_refresh_request(config: Config, refresh_token: str) -> dict:
     """Build the token refresh request body from the given refresh token."""
     if not config.api_key or not config.api_secret:
-        raise AuthenticationError("api_key and api_secret are required for token refresh")
+        raise AuthenticationError(
+            "api_key and api_secret are required for token refresh"
+        )
     return RefreshTokenRequest(refresh_token=refresh_token).to_dict()
 
 
@@ -138,18 +175,24 @@ class AsyncTokenManager(_TokenState):
         logger.info("Token refreshed successfully")
         return self._token
 
-    async def authenticate(self, otp: str | None = None) -> Token:
+    async def authenticate(
+        self, otp: str | None = None, transaction_id: str | None = None
+    ) -> Token:
         """Authenticate using consumer credentials and OTP to obtain an access token.
 
         Args:
-            otp: The one-time password used to authenticate.
+            otp: Normal OTP code typed by the user (SMS/email).
+            transaction_id: Smart OTP transaction id (from ``request_otp``),
+                used once the user approves the request on their device.
+                Mutually exclusive with ``otp``.
         Returns:
             The newly issued token.
         Raises:
-            AuthenticationError: If the API key or secret is missing.
+            AuthenticationError: If the API key or secret is missing, both otp and
+                transaction_id are given, or (for Smart OTP) approval is still pending.
             APIError: If the request fails or the response is invalid.
         """
-        body = _build_auth_request(self._config, otp)
+        body = _build_auth_request(self._config, otp, transaction_id)
         data = await self._rest.post(EP_ACCESS_TOKEN, json_body=body)
         self._token = _parse_token(data, "authenticating")
         self._rest.set_auth_header(self._token.access_token)
@@ -167,7 +210,11 @@ class AsyncTokenManager(_TokenState):
         logger.info("Access token set manually")
 
     async def request_otp(self) -> dict:
-        """Request an OTP to be sent to the registered channel.
+        """Request an OTP to be sent (normal OTP) or pushed for approval (Smart OTP).
+
+        Both account types share the same request endpoint — the server
+        decides how to deliver the OTP based on how the account was
+        registered (SMS/email vs Smart OTP push-approval).
 
         Returns:
             The raw OTP request response.
@@ -181,27 +228,71 @@ class AsyncTokenManager(_TokenState):
             raise APIError("Unexpected response format while requesting OTP")
         return data
 
-    async def ensure_authenticated(self, otp: str | None = None) -> str:
+    async def ensure_authenticated(
+        self,
+        otp: str | None = None,
+        transaction_id: str | None = None,
+        poll_interval: float = SMART_OTP_POLL_INTERVAL,
+        poll_max_retries: int = SMART_OTP_POLL_MAX_RETRIES,
+    ) -> str:
         """Ensure a valid token is available, refreshing or authenticating as needed.
 
         Args:
-            otp: The one-time password used if authentication is required.
+            otp: Normal OTP code typed by the user — verified in a single call.
+            transaction_id: Smart OTP transaction id (from ``request_otp``).
+                Since approval on the device is asynchronous, this polls
+                ``authenticate`` every ``poll_interval`` seconds, up to
+                ``poll_max_retries`` attempts, until the user approves.
+            poll_interval: Seconds to wait between Smart OTP approval polls.
+            poll_max_retries: Max number of Smart OTP approval poll attempts.
         Returns:
             The current valid access token.
         Raises:
-            AuthenticationError: If no valid token can be obtained.
-            APIError: If a refresh or authentication request fails.
+            AuthenticationError: If no valid token can be obtained, or Smart OTP
+                approval is not confirmed within ``poll_max_retries`` attempts.
+            APIError: If a refresh or authentication request fails for a reason
+                other than pending Smart OTP approval.
         """
         if self._token is None or self.is_token_expired:
             if self.has_refresh_token:
                 await self.refresh()
             elif otp:
-                await self.authenticate(otp)
+                await self.authenticate(otp=otp)
+            elif transaction_id:
+                await self._poll_smart_otp(
+                    transaction_id, poll_interval, poll_max_retries
+                )
             else:
                 raise AuthenticationError(
-                    "OTP is required to authenticate — no refresh token available"
+                    "OTP or Smart OTP transaction_id is required to authenticate — "
+                    "no refresh token available"
                 )
         return self._token.access_token
+
+    async def _poll_smart_otp(
+        self, transaction_id: str, interval: float, max_retries: int
+    ) -> Token:
+        """Poll authenticate() with a Smart OTP transaction id until approved or retries exhausted."""
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await self.authenticate(transaction_id=transaction_id)
+            except (AuthenticationError, APIError) as exc:
+                if not _is_smart_otp_pending(exc):
+                    raise
+                if attempt >= max_retries:
+                    raise AuthenticationError(
+                        f"Smart OTP approval not confirmed after {max_retries} "
+                        "attempts — ask the user to approve the request on "
+                        "their device"
+                    ) from exc
+                logger.info(
+                    "Smart OTP approval still pending (attempt %d/%d), "
+                    "retrying in %.0fs...",
+                    attempt,
+                    max_retries,
+                    interval,
+                )
+                await asyncio.sleep(interval)
 
 
 # ── sync class ───────────────────────────────────────────────
@@ -234,18 +325,24 @@ class TokenManager(_TokenState):
         logger.info("Token refreshed successfully")
         return self._token
 
-    def authenticate(self, otp: str | None = None) -> Token:
+    def authenticate(
+        self, otp: str | None = None, transaction_id: str | None = None
+    ) -> Token:
         """Authenticate using consumer credentials and OTP to obtain an access token.
 
         Args:
-            otp: The one-time password used to authenticate.
+            otp: Normal OTP code typed by the user (SMS/email).
+            transaction_id: Smart OTP transaction id (from ``request_otp``),
+                used once the user approves the request on their device.
+                Mutually exclusive with ``otp``.
         Returns:
             The newly issued token.
         Raises:
-            AuthenticationError: If the API key or secret is missing.
+            AuthenticationError: If the API key or secret is missing, both otp and
+                transaction_id are given, or (for Smart OTP) approval is still pending.
             APIError: If the request fails or the response is invalid.
         """
-        body = _build_auth_request(self._config, otp)
+        body = _build_auth_request(self._config, otp, transaction_id)
         data = self._rest.post(EP_ACCESS_TOKEN, json_body=body)
         self._token = _parse_token(data, "authenticating")
         self._rest.set_auth_header(self._token.access_token)
@@ -263,7 +360,11 @@ class TokenManager(_TokenState):
         logger.info("Access token set manually")
 
     def request_otp(self) -> dict:
-        """Request an OTP to be sent to the registered channel.
+        """Request an OTP to be sent (normal OTP) or pushed for approval (Smart OTP).
+
+        Both account types share the same request endpoint — the server
+        decides how to deliver the OTP based on how the account was
+        registered (SMS/email vs Smart OTP push-approval).
 
         Returns:
             The raw OTP request response.
@@ -277,24 +378,66 @@ class TokenManager(_TokenState):
             raise APIError("Unexpected response format while requesting OTP")
         return data
 
-    def ensure_authenticated(self, otp: str | None = None) -> str:
+    def ensure_authenticated(
+        self,
+        otp: str | None = None,
+        transaction_id: str | None = None,
+        poll_interval: float = SMART_OTP_POLL_INTERVAL,
+        poll_max_retries: int = SMART_OTP_POLL_MAX_RETRIES,
+    ) -> str:
         """Ensure a valid token is available, refreshing or authenticating as needed.
 
         Args:
-            otp: The one-time password used if authentication is required.
+            otp: Normal OTP code typed by the user — verified in a single call.
+            transaction_id: Smart OTP transaction id (from ``request_otp``).
+                Since approval on the device is asynchronous, this polls
+                ``authenticate`` every ``poll_interval`` seconds, up to
+                ``poll_max_retries`` attempts, until the user approves.
+            poll_interval: Seconds to wait between Smart OTP approval polls.
+            poll_max_retries: Max number of Smart OTP approval poll attempts.
         Returns:
             The current valid access token.
         Raises:
-            AuthenticationError: If no valid token can be obtained.
-            APIError: If a refresh or authentication request fails.
+            AuthenticationError: If no valid token can be obtained, or Smart OTP
+                approval is not confirmed within ``poll_max_retries`` attempts.
+            APIError: If a refresh or authentication request fails for a reason
+                other than pending Smart OTP approval.
         """
         if self._token is None or self.is_token_expired:
             if self.has_refresh_token:
                 self.refresh()
             elif otp:
-                self.authenticate(otp)
+                self.authenticate(otp=otp)
+            elif transaction_id:
+                self._poll_smart_otp(transaction_id, poll_interval, poll_max_retries)
             else:
                 raise AuthenticationError(
-                    "OTP is required to authenticate — no refresh token available"
+                    "OTP or Smart OTP transaction_id is required to authenticate — "
+                    "no refresh token available"
                 )
         return self._token.access_token
+
+    def _poll_smart_otp(
+        self, transaction_id: str, interval: float, max_retries: int
+    ) -> Token:
+        """Poll authenticate() with a Smart OTP transaction id until approved or retries exhausted."""
+        for attempt in range(1, max_retries + 1):
+            try:
+                return self.authenticate(transaction_id=transaction_id)
+            except (AuthenticationError, APIError) as exc:
+                if not _is_smart_otp_pending(exc):
+                    raise
+                if attempt >= max_retries:
+                    raise AuthenticationError(
+                        f"Smart OTP approval not confirmed after {max_retries} "
+                        "attempts — ask the user to approve the request on "
+                        "their device"
+                    ) from exc
+                logger.info(
+                    "Smart OTP approval still pending (attempt %d/%d), "
+                    "retrying in %.0fs...",
+                    attempt,
+                    max_retries,
+                    interval,
+                )
+                time.sleep(interval)

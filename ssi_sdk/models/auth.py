@@ -12,12 +12,15 @@ class TokenRequest:
     api_key: str
     api_secret: str
     otp: str | None = None
+    transaction_id: str | None = None
 
     def to_dict(self) -> dict:
         """Convert the TokenRequest to a dictionary for API requests.
 
         Returns:
-            Dictionary with camelCase keys, including ``otp`` only when set.
+            Dictionary with camelCase keys. ``otp`` is included only when set
+            (normal OTP flow); ``transactionId`` is included only when set
+            (Smart OTP flow) — the two are mutually exclusive.
         """
         result = {
             "apiKey": self.api_key,
@@ -25,6 +28,8 @@ class TokenRequest:
         }
         if self.otp is not None:
             result["otp"] = self.otp
+        if self.transaction_id is not None:
+            result["transactionId"] = self.transaction_id
         return result
 
 

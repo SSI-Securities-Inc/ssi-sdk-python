@@ -9,6 +9,7 @@ from ssi_sdk.constant import (
     DEFAULT_SIZE,
     EP_DATA_INDEX_LIST,
     EP_DATA_INDEX_SUMMARY,
+    EP_DATA_MASTER_DATA,
     EP_DATA_OHLC,
     EP_DATA_SECURITIES_BY_BOARD,
     EP_DATA_SECURITIES_SUMMARY,
@@ -19,6 +20,8 @@ from ssi_sdk.models import (
     MarketIndexesRequest,
     MarketIndexSummary,
     MarketIndexSummaryRequest,
+    MasterData,
+    MasterDataRequest,
     OHLCData,
     OHLCRequest,
     SecuritiesInfo,
@@ -31,6 +34,7 @@ from ssi_sdk.utils import (
     from_beginning_of_day,
     from_end_of_day,
     require_non_empty,
+    to_int,
     today_date_str,
 )
 
@@ -129,6 +133,31 @@ def _build_securities_summary_params(
 def _parse_securities_summary(data: dict) -> list[SecuritiesSummary]:
     """Parse the raw securities summary payload into a list of SecuritiesSummary."""
     return SecuritiesSummary.from_list(data.get("data", []))
+
+
+def _build_master_data_params(
+    from_date: str,
+    to_date: str,
+    page: int,
+    size: int,
+) -> dict:
+    """Build the master data request query params."""
+    return MasterDataRequest(
+        from_date=from_date,
+        to_date=to_date,
+        page=page,
+        size=size,
+    ).to_dict()
+
+
+def _parse_master_data(data: dict) -> list[MasterData]:
+    """Parse the raw master data response payload into a list of MasterData."""
+    return MasterData.from_list(data.get("data", []))
+
+
+def _master_data_pages_count(data: dict) -> int:
+    """Extract the total page count from a raw master data response payload."""
+    return to_int(data.get("pagesCount"), 1)
 
 
 # ── async class ──────────────────────────────────────────────
@@ -719,6 +748,55 @@ class AsyncMarketDataService:
             to_date=to_date,
         )
 
+    # -- Master data -----------------------------------------------------
+
+    async def _get_master_data(self, from_date: str, to_date: str) -> list[MasterData]:
+        """Fetch every page of master data for a date range and return the combined list."""
+        page = DEFAULT_PAGE
+        items: list[MasterData] = []
+        while True:
+            params = _build_master_data_params(from_date, to_date, page, DEFAULT_SIZE)
+            data = await self._rest.get(EP_DATA_MASTER_DATA, params=params)
+            items.extend(_parse_master_data(data))
+            if page >= _master_data_pages_count(data):
+                break
+            page += 1
+        return items
+
+    async def get_master_data(self) -> list[MasterData]:
+        """Get today's reference price data (ceiling/floor/reference) for all symbols.
+
+        The API paginates this endpoint — this method fetches every page
+        internally and returns the combined list, so callers don't need to
+        deal with page/size themselves.
+
+        Returns:
+            List of today's reference price records.
+        """
+        today = today_date_str()
+        return await self._get_master_data(today, today)
+
+    async def get_master_data_historical(
+        self, from_date: str, to_date: str
+    ) -> list[MasterData]:
+        """Get reference price data (ceiling/floor/reference) for all symbols.
+
+        The API paginates this endpoint — this method fetches every page
+        internally and returns the combined list, so callers don't need to
+        deal with page/size themselves.
+
+        Args:
+            from_date: Start date "YYYY/MM/DD".
+            to_date: End date "YYYY/MM/DD".
+        Returns:
+            List of reference price records in the date range.
+        Raises:
+            ValidationError: If from_date or to_date is empty.
+        """
+        require_non_empty(from_date, "fromDate")
+        require_non_empty(to_date, "toDate")
+        return await self._get_master_data(from_date, to_date)
+
 
 # ── sync class ───────────────────────────────────────────────
 
@@ -1307,3 +1385,50 @@ class MarketDataService:
             from_date=from_date,
             to_date=to_date,
         )
+
+    # -- Master data -----------------------------------------------------
+
+    def _get_master_data(self, from_date: str, to_date: str) -> list[MasterData]:
+        """Fetch every page of master data for a date range and return the combined list."""
+        page = DEFAULT_PAGE
+        items: list[MasterData] = []
+        while True:
+            params = _build_master_data_params(from_date, to_date, page, DEFAULT_SIZE)
+            data = self._rest.get(EP_DATA_MASTER_DATA, params=params)
+            items.extend(_parse_master_data(data))
+            if page >= _master_data_pages_count(data):
+                break
+            page += 1
+        return items
+
+    def get_master_data(self) -> list[MasterData]:
+        """Get today's reference price data (ceiling/floor/reference) for all symbols.
+
+        The API paginates this endpoint — this method fetches every page
+        internally and returns the combined list, so callers don't need to
+        deal with page/size themselves.
+
+        Returns:
+            List of today's reference price records.
+        """
+        today = today_date_str()
+        return self._get_master_data(today, today)
+
+    def get_master_data_historical(self, from_date: str, to_date: str) -> list[MasterData]:
+        """Get reference price data (ceiling/floor/reference) for all symbols.
+
+        The API paginates this endpoint — this method fetches every page
+        internally and returns the combined list, so callers don't need to
+        deal with page/size themselves.
+
+        Args:
+            from_date: Start date "YYYY/MM/DD".
+            to_date: End date "YYYY/MM/DD".
+        Returns:
+            List of reference price records in the date range.
+        Raises:
+            ValidationError: If from_date or to_date is empty.
+        """
+        require_non_empty(from_date, "fromDate")
+        require_non_empty(to_date, "toDate")
+        return self._get_master_data(from_date, to_date)

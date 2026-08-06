@@ -325,6 +325,62 @@ class SecuritiesInfo:
 
 
 @dataclass
+class MasterDataRequest:
+    """Master data (reference price) request."""
+
+    from_date: str
+    to_date: str
+    page: int = DEFAULT_PAGE
+    size: int = DEFAULT_SIZE
+
+    def to_dict(self) -> dict:
+        """Convert the request to an API payload with the endpoint's query keys.
+
+        Returns:
+            Dictionary with ``From``/``To`` date range and pagination keys.
+        """
+        return {
+            "From": self.from_date,
+            "To": self.to_date,
+            "pageIndex": self.page,
+            "pageSize": self.size,
+        }
+
+
+@dataclass
+class MasterData:
+    """Reference price (ceiling/floor/reference) for a symbol on a trading date."""
+
+    board: Board | None
+    symbol: str
+    trading_date: str
+    ceiling: float
+    floor: float
+    ref_price: float
+
+    @classmethod
+    def from_list(cls, data: list[dict]) -> list[MasterData]:
+        """Build a list of MasterData from a list of API dictionaries.
+
+        Args:
+            data: List of dicts with camelCase master data fields (exchange, symbol, prices).
+        Returns:
+            List of MasterData instances, one per input dictionary.
+        """
+        return [
+            cls(
+                board=Board.from_value(item.get("board")),
+                symbol=item.get("symbol", ""),
+                trading_date=item.get("tradingDate", ""),
+                ceiling=to_number(item.get("ceiling", 0.0)),
+                floor=to_number(item.get("floor", 0.0)),
+                ref_price=to_number(item.get("refPrice", 0.0)),
+            )
+            for item in data
+        ]
+
+
+@dataclass
 class SecuritiesSummaryRequest:
     """Securities summary request."""
 

@@ -2,7 +2,10 @@
 
 Python SDK cho nền tảng giao dịch chứng khoán SSI. Hỗ trợ REST API và WebSocket streaming, cả đồng bộ (sync) và bất đồng bộ (async).
 
-**Yêu cầu:** Python 3.10+
+[![PyPI version](https://img.shields.io/pypi/v/ssi-sdk?logo=pypi&logoColor=white)](https://pypi.org/project/ssi-sdk/)
+[![Downloads](https://static.pepy.tech/badge/ssi-sdk/month)](https://pepy.tech/project/ssi-sdk)
+[![Python version](https://img.shields.io/pypi/pyversions/ssi-sdk?logo=python&logoColor=white)](https://pypi.org/project/ssi-sdk/)
+[![License](https://img.shields.io/github/license/SSI-Securities-Inc/ssi-sdk-python)](https://github.com/SSI-Securities-Inc/ssi-sdk-python/blob/main/LICENSE)
 
 ## Mục lục
 
@@ -192,13 +195,40 @@ print(f"Expires at: {token.expires_at}")
 
 # Hoặc truy cập token_manager
 token = auth.token_manager.authenticate(otp="222222")
+
+# Smart OTP: truyền transaction_id (lấy từ request_otp) thay vì otp —
+# chỉ gọi được sau khi user đã bấm approve trên thiết bị, nếu chưa approve
+# API sẽ báo lỗi. Muốn tự chờ approve, dùng ensure_authenticated (mục 1.4).
+token = auth.authenticate(transaction_id="...")
 ```
 
+`otp` và `transaction_id` loại trừ lẫn nhau — chỉ truyền một trong hai.
+
 ### 1.2. Yêu cầu gửi OTP
+
+Cùng một endpoint cho cả 2 loại tài khoản (SMS/email hoặc Smart OTP) — server
+tự quyết định cách gửi OTP dựa trên cách tài khoản đã đăng ký (đăng ký từ đầu,
+không đổi được runtime):
 
 ```python
 result = auth.request_otp()
 print(result)
+```
+
+**Tài khoản đã kích hoạt Smart OTP có 2 cách để xác thực:**
+
+1. **Approve trên app** — gọi `request_otp()` để bắn yêu cầu lên thiết bị,
+   lấy `transaction_id`, rồi dùng `ensure_authenticated(transaction_id=...)` để
+   SDK tự poll cho đến khi user bấm approve (xem mục 1.4, case 3).
+2. **Lấy mã trực tiếp trên app** — mở app Smart OTP, đọc mã hiển thị sẵn, rồi
+   điền thẳng mã đó vào `ensure_authenticated(otp=...)` (hoặc `authenticate(otp=...)`)
+   — **không cần** gọi `request_otp()` trước, vì mã đã được app sinh sẵn tại
+   chỗ chứ không phải mã do server gửi.
+
+```python
+# Cách 2: khách tự lấy mã Smart OTP trên app rồi điền thẳng vào — giống hệt
+# flow OTP thường, không cần request trước
+access_token = auth.ensure_authenticated(otp="123456")
 ```
 
 ### 1.3. Làm mới token
@@ -209,9 +239,29 @@ token = auth.refresh()
 
 ### 1.4. Tự động đảm bảo xác thực
 
+`ensure_authenticated` tự refresh nếu token còn refresh token hợp lệ; nếu chưa
+có token thì xác thực theo tham số truyền vào. Không truyền `otp`/`transaction_id`
+và không có refresh token → báo lỗi (giữ nguyên hành vi cũ).
+
 ```python
-# Tự động refresh nếu token hết hạn, hoặc yêu cầu OTP nếu cần
+# 1) Refresh nếu có refresh token còn dùng được — không cần otp/transaction_id
+access_token = auth.ensure_authenticated()
+
+# 2) OTP thường (SMS/email), hoặc mã Smart OTP lấy trực tiếp trên app — cả
+# hai đều dùng tham số otp, xác thực 1 lần, không chờ đợi
 access_token = auth.ensure_authenticated(otp="222222")
+
+# 3) Smart OTP dạng push-approval — truyền transaction_id lấy từ
+# request_otp(). Vì việc approve trên thiết bị là bất đồng bộ, SDK tự
+# động poll access_token mỗi poll_interval giây, tối đa poll_max_retries lần,
+# hoặc raise AuthenticationError nếu hết số lần mà vẫn chưa approve.
+otp_result = auth.request_otp()
+transaction_id = otp_result["transactionId"]
+access_token = auth.ensure_authenticated(
+    transaction_id=transaction_id,
+    poll_interval=5,      # mặc định 5s (SMART_OTP_POLL_INTERVAL)
+    poll_max_retries=5,   # mặc định 5 lần (SMART_OTP_POLL_MAX_RETRIES)
+)
 ```
 
 ### 1.5. Kiểm tra trạng thái token
@@ -280,6 +330,8 @@ Truy cập qua `data.market_data` (client `Data` / `AsyncData`).
 | | `get_securities_summary_historical(symbol, from_date, to_date)` | Summary mã lịch sử |
 | | `get_securities_summary_by_index(index)` | Summary theo chỉ số |
 | | `get_securities_summary_by_index_historical(index, from_date, to_date)` | Summary chỉ số lịch sử |
+| **Master Data** | `get_master_data()` | Giá trần/sàn/tham chiếu tất cả mã hôm nay |
+| | `get_master_data_historical(from_date, to_date)` | Giá trần/sàn/tham chiếu tất cả mã trong khoảng ngày |
 
 ### 3.1. Dữ liệu OHLC (nến)
 
@@ -415,6 +467,26 @@ summary = data.market_data.get_securities_summary_by_index_historical(
 ```
 
 **Trả về:** `list[SecuritiesSummary]` — có các trường: `symbol`, `trading_date`, `open_price`, `high_price`, `low_price`, `close_price`, `price_change`, `price_change_percent`, `total_match`, `total_match_value`, ...
+
+### 3.6. Master Data (giá trần/sàn/tham chiếu)
+
+SDK tự động gọi hết các trang (API endpoint này phân trang), không cần tự truyền page/size.
+
+```python
+# Hôm nay
+result = data.market_data.get_master_data()
+
+# Khoảng ngày tự chọn
+result = data.market_data.get_master_data_historical(
+    from_date="2026/08/05",
+    to_date="2026/08/06",
+)
+
+for item in result:
+    print(f"{item.board} {item.symbol}: trần={item.ceiling} sàn={item.floor} TC={item.ref_price}")
+```
+
+**Trả về:** `list[MasterData]` — mỗi `MasterData` có: `board`, `symbol`, `trading_date`, `ceiling`, `floor`, `ref_price`.
 
 ---
 
@@ -1091,7 +1163,7 @@ config = Config(
     retry_delay=1.0,
     rate_limit_per_second=5,
 )
-
+```
 
 ---
 
@@ -1330,6 +1402,17 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `total_trade_buy` | `float` | Giá trị mua |
 | `total_sell` | `int` | Tổng KL bán |
 | `total_trade_sell` | `float` | Giá trị bán |
+
+**`MasterData`** — Giá trần/sàn/tham chiếu
+
+| Trường | Kiểu | Mô tả |
+|--------|------|-------|
+| `board` | `Board \| None` | Sàn giao dịch (`HOSE`, `HNX`, `UPCOM`, `DERIVATIVES`) |
+| `symbol` | `str` | Mã chứng khoán |
+| `trading_date` | `str` | Ngày giao dịch |
+| `ceiling` | `float` | Giá trần |
+| `floor` | `float` | Giá sàn |
+| `ref_price` | `float` | Giá tham chiếu |
 
 #### Portfolio
 
