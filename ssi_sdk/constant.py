@@ -42,9 +42,9 @@ EP_REFRESH_TOKEN = "/api/v3/auth/refresh"
 EP_REQUEST_OTP = "/api/v3/auth/requestOtp"
 
 # Returned while a Smart OTP push-approval hasn't been confirmed on the
-# device yet: HTTP 409 with body {"code": 401114, "msg": "Push-approval is
-# pending"}. Confirmed against SSI FastConnect UAT.
-SMART_OTP_PENDING_STATUS = 409
+# device yet: HTTP 202 with body {"code": 401114, "msg": "Push-approval is
+# pending"}. Confirmed against SSI FastConnect.
+SMART_OTP_PENDING_STATUS = 202
 SMART_OTP_PENDING_CODE = 401114
 
 # Smart OTP approval polling — max number of authenticate() attempts and the

@@ -54,13 +54,13 @@ def _build_auth_request(
 def _is_smart_otp_pending(error: AuthenticationError | APIError) -> bool:
     """Whether an auth error means the Smart OTP approval is still pending.
 
-    Confirmed against SSI FastConnect UAT: HTTP 409 with body
+    Confirmed against SSI FastConnect: HTTP 202 with body
     ``{"code": 401114, "msg": "Push-approval is pending"}``.
     """
-    if error.status_code != SMART_OTP_PENDING_STATUS:
-        return False
     body = error.response_body
-    return isinstance(body, dict) and body.get("code") == SMART_OTP_PENDING_CODE
+    if isinstance(body, dict) and (body.get("code") == SMART_OTP_PENDING_CODE or body.get("code") == 401114 or body.get("status") == 202):
+        return True
+    return error.status_code == SMART_OTP_PENDING_STATUS or error.status_code == 202
 
 
 def _build_refresh_request(config: Config, refresh_token: str) -> dict:
@@ -85,13 +85,17 @@ def _build_otp_request(config: Config) -> dict:
 def _parse_token(data, context: str) -> Token:
     """Parse and validate a token from a raw response payload."""
     if not isinstance(data, dict):
-        raise APIError(f"Unexpected response format while {context}")
+        raise APIError(f"Unexpected response format while {context}", status_code=SMART_OTP_PENDING_STATUS, response_body=data)
     payload = data.get("data", data)
     if not isinstance(payload, dict):
-        raise APIError(f"Unexpected token payload format while {context}")
+        raise APIError(f"Unexpected token payload format while {context}", status_code=SMART_OTP_PENDING_STATUS, response_body=data)
     token = Token.from_dict(payload)
     if not token.access_token:
-        raise APIError(f"{context.capitalize()} payload is missing access token")
+        raise APIError(
+            f"{context.capitalize()} payload is missing access token",
+            status_code=SMART_OTP_PENDING_STATUS,
+            response_body=data,
+        )
     return token
 
 
