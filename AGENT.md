@@ -74,43 +74,17 @@ if __name__ == "__main__":
 
 ## 3. Public API Cheatsheet for AI Agents
 
-### 3.1 Authentication (`auth.token_manager` — also delegated directly onto `auth`)
+### 3.1 Market Data (`data.market_data` / `async_data.market_data`)
 
 | Method | Parameters | Return Type | Description |
 |--------|------------|-------------|-------------|
-| `authenticate` | `otp=None`, `transaction_id=None` | `Token` | Authenticate via normal OTP, Smart OTP direct code, or Smart OTP `transaction_id` (mutually exclusive with `otp`) |
-| `refresh` | — | `Token` | Refresh the access token using the current refresh token |
-| `ensure_authenticated` | `otp=None`, `transaction_id=None`, `poll_interval=5`, `poll_max_retries=5` | `str` (access token) | Refreshes if possible, else authenticates; for Smart OTP push-approval, polls up to `poll_max_retries` times every `poll_interval`s |
-| `request_otp` | — | `dict` | Request OTP delivery — same endpoint for both normal (SMS/email) and Smart OTP push-approval accounts |
-| `set_token` | `token: Token` | `None` | Manually set the current token (advanced use) |
+| `get_ohlc` | `symbol`, `from_date`, `to_date`, `resolution`, `page_index`, `page_size` | `OHLCData` | Query candle OHLCV data |
+| `get_market_indexes` | `index_id` | `MarketIndexes` | Get list of market indexes |
+| `get_market_index_summary` | `index_id`, `from_date`, `to_date`, `page_index`, `page_size` | `MarketIndexSummary` | Summary metrics for an index |
+| `get_securities_info` | `symbol`, `market`, `page_index`, `page_size` | `SecuritiesInfo` | Security details (listed shares, lot size, etc.) |
+| `get_securities_summary` | `symbol`, `market`, `page_index`, `page_size` | `SecuritiesSummary` | Summary of stock transactions |
 
-Properties: `token`, `access_token`, `is_token_expired`, `has_refresh_token`.
-
-### 3.2 Market Data (`data.market_data` / `async_data.market_data`)
-
-> All OHLC/index/securities methods below have a same-day variant (no date args) and, where noted, an `_historical` variant (`from_date`, `to_date`, `page=1`, `size=1000`). `download_ohlc_1minute`/`download_ohlc_1day` currently raise `NotImplementedError`.
-
-| Method | Parameters | Return Type | Description |
-|--------|------------|-------------|-------------|
-| `get_ohlc_<tf>` | `symbol` | `list[OHLCData]` | Today's OHLC bars. `<tf>` = `1minute`, `3minute`, `5minute`, `15minute`, `1hour` |
-| `get_ohlc_<tf>_historical` | `symbol`, `from_date`, `to_date`, `page`, `size` | `list[OHLCData]` | Historical OHLC bars. `<tf>` = above plus `1day`, `1week`, `1month` |
-| `get_indexes` | — | `list[MarketIndexes]` | All market indexes |
-| `get_indexes_by_board` | `board: Board` | `list[MarketIndexes]` | Indexes on one exchange board |
-| `get_index_summary` | `index: str` | `MarketIndexSummary \| None` | Latest summary for an index |
-| `get_index_summary_historical` | `index`, `trading_date` | `MarketIndexSummary \| None` | Summary for an index on one date |
-| `get_board_summary` | `board: Board` | `MarketIndexSummary \| None` | Latest summary for a board |
-| `get_board_summary_historical` | `board`, `trading_date` | `MarketIndexSummary \| None` | Summary for a board on one date |
-| `get_securities_info` | `symbol: str` | `SecuritiesInfo \| None` | Info for a single security |
-| `get_securities_info_by_index` | `index: str` | `list[SecuritiesInfo]` | Info for all securities in an index |
-| `get_securities_info_by_board` | `board: Board` | `list[SecuritiesInfo]` | Info for all securities on a board |
-| `get_securities_summary` | `symbol: str` | `list[SecuritiesSummary]` | Today's summary for a symbol |
-| `get_securities_summary_historical` | `symbol`, `from_date`, `to_date` | `list[SecuritiesSummary]` | Summary for a symbol over a date range |
-| `get_securities_summary_by_index` | `index: str` | `list[SecuritiesSummary]` | Today's summary for index members |
-| `get_securities_summary_by_index_historical` | `index`, `from_date`, `to_date` | `list[SecuritiesSummary]` | Summary for index members over a date range |
-| `get_master_data` | — | `list[MasterData]` | Today's ceiling/floor/reference price for all symbols — fetches every page internally |
-| `get_master_data_historical` | `from_date`, `to_date` | `list[MasterData]` | Ceiling/floor/reference price for all symbols over a date range — fetches every page internally |
-
-### 3.3 Account & Portfolio (`trading.account` & `trading.portfolio`)
+### 3.2 Account & Portfolio (`trading.account` & `trading.portfolio`)
 
 | Service | Method | Return Type | Description |
 |---------|--------|-------------|-------------|
@@ -124,7 +98,7 @@ Properties: `token`, `access_token`, `is_token_expired`, `has_refresh_token`.
 | `portfolio` | `get_equity_ppmmr(account_no)` | `EquityPPMMR` | Purchasing power & margin ratio (Equity) |
 | `portfolio` | `get_derivative_ppmmr(account_no)` | `DerivativePPMMR` | Purchasing power & margin ratio (Derivative) |
 
-### 3.4 Standard Trading (`trading.trading`)
+### 3.3 Standard Trading (`trading.trading`)
 
 | Method | Parameters | Return Type | Description |
 |--------|------------|-------------|-------------|
@@ -139,7 +113,7 @@ Properties: `token`, `access_token`, `is_token_expired`, `has_refresh_token`.
 | `cancel_order_by_order_id` | `account_no`, `order_id` | `CancelOrderResponse` | Cancel order by server order ID |
 | `get_max_buy_sell` | `account_no`, `symbol`, `price` | `MaxBuySellResponse` | Max buy/sell qty at given price |
 
-### 3.5 Flexible Conditional Orders - FCO (`trading.trading`)
+### 3.4 Flexible Conditional Orders - FCO (`trading.trading`)
 
 | Method | Key Parameters | Return Type | Description |
 |--------|----------------|-------------|-------------|
