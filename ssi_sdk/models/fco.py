@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from ssi_sdk._version import __version__
-from ssi_sdk.utils import to_float, to_int, to_number
+from ssi_sdk.utils import to_int, to_number
 from ssi_sdk.enums import FCOType, FCOOperator, FCOStatus, OrderSide, OrderStatus, OrderType
 
 @dataclass

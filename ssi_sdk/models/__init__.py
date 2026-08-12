@@ -9,6 +9,8 @@ from ssi_sdk.models.market_data import (
     MarketIndexesRequest,
     MarketIndexSummary,
     MarketIndexSummaryRequest,
+    MasterData,
+    MasterDataRequest,
     OHLCData,
     OHLCRequest,
     SecuritiesInfo,
@@ -104,6 +106,8 @@ __all__ = [
     "SecuritiesInfoRequest",
     "SecuritiesSummary",
     "SecuritiesSummaryRequest",
+    "MasterDataRequest",
+    "MasterData",
     # -------------------------------------------------------------------------
     # Portfolio models
     # -------------------------------------------------------------------------

@@ -158,7 +158,7 @@ def _build_fco_list(
     ).to_dict()
 
 
-def _build_fco_params(params: FCOParams | GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams) -> dict:
+def _build_fco_params(params: GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams) -> dict:
     """Validate inputs and build the FCO params dict."""
     if isinstance(params, GTDParams):
         return params
@@ -671,7 +671,7 @@ class AsyncTradingService:
 
     async def _place_fco(
         self,
-        params: FCOParams | GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams,
+        params: GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams,
     ) -> FCOPlaceResponse:
         """Place a conditional (FCO) order."""
         _params = _build_fco_params(params)
@@ -1407,7 +1407,7 @@ class TradingService:
 
     def _place_fco(
         self,
-        params: FCOParams | GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams,
+        params: GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams,
     ) -> FCOPlaceResponse:
         """Place a conditional (FCO) order."""
         _params = _build_fco_params(params)

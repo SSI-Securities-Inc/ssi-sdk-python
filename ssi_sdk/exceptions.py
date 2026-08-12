@@ -51,9 +51,7 @@ class APIError(SSIError):
             status_code: HTTP status code returned by the API, if any.
             response_body: Parsed response body returned by the API, if any.
         """
-        self.status_code = status_code
-        self.response_body = response_body
-        super().__init__(message, code)
+        super().__init__(message, code, status_code, response_body)
 
 
 class WebSocketError(SSIError):
