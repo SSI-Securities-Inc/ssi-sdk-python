@@ -1382,6 +1382,8 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `icb_name` | `str \| None` | Tên ngành ICB |
 | `i_index` | `float \| None` | Chỉ số I |
 | `i_nav` | `float \| None` | NAV (ETF) |
+| `open_interest` | `float \| None` | Khối lượng mở (phái sinh) |
+| `settlement_price` | `float \| None` | Giá thanh toán (phái sinh) |
 
 **`SecuritiesSummary`** — Tổng hợp chứng khoán
 
@@ -1402,6 +1404,16 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `total_trade_buy` | `float` | Giá trị mua |
 | `total_sell` | `int` | Tổng KL bán |
 | `total_trade_sell` | `float` | Giá trị bán |
+| `total_foreign_buy` | `int` | KL mua khối ngoại |
+| `total_foreign_buy_value` | `float` | GT mua khối ngoại |
+| `total_foreign_sell` | `int` | KL bán khối ngoại |
+| `total_foreign_sell_value` | `float` | GT bán khối ngoại |
+| `remain_foreign_room` | `int` | Room ngoại còn lại |
+| `total_foreign_room` | `int` | Tổng room ngoại |
+| `total_deal` | `int` | KL giao dịch thỏa thuận |
+| `total_deal_value` | `float` | GT giao dịch thỏa thuận |
+| `open_interest` | `float` | Khối lượng mở (phái sinh) |
+| `settlement_price` | `float` | Giá thanh toán (phái sinh) |
 
 **`MasterData`** — Giá trần/sàn/tham chiếu
 
@@ -1433,6 +1445,7 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `buy_t0` / `buy_t1` / `buy_t2` | `float` | Mua T+0/1/2 |
 | `advance_cash_t0` / `advance_cash_t1` | `float` | Ứng trước T+0/1 |
 | `hold_subscription` | `float` | Giữ đăng ký |
+| `dividend` | `float` | Cổ tức chờ về/đã ghi nhận |
 
 **`DerivativeAccountBalance`** — Số dư tài khoản phái sinh
 
