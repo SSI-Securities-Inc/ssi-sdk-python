@@ -290,6 +290,8 @@ class SecuritiesInfo:
     icb_name: str | None = None
     i_index: float | None = None
     i_nav: float | None = None
+    open_interest: float | None = None
+    settlement_price: float | None = None
 
     @classmethod
     def from_list(cls, data: list[dict]) -> list[SecuritiesInfo]:
@@ -319,6 +321,8 @@ class SecuritiesInfo:
                 icb_name=item.get("icbName"),
                 i_index=to_float(item.get("iIndex", 0.0)),
                 i_nav=to_float(item.get("iNav", 0.0)),
+                open_interest=to_float(item.get("openInterest", 0.0)),
+                settlement_price=to_float(item.get("settlementPrice", 0.0)),
             )
             for item in data
         ]
@@ -429,6 +433,16 @@ class SecuritiesSummary:
     total_trade_buy: float
     total_sell: int
     total_trade_sell: float
+    total_foreign_buy: int = 0
+    total_foreign_buy_value: float = 0.0
+    total_foreign_sell: int = 0
+    total_foreign_sell_value: float = 0.0
+    remain_foreign_room: int = 0
+    total_foreign_room: int = 0
+    total_deal: int = 0
+    total_deal_value: float = 0.0
+    open_interest: float = 0.0
+    settlement_price: float = 0.0
 
     @classmethod
     def from_list(cls, data: list[dict]) -> list[SecuritiesSummary]:
@@ -456,6 +470,16 @@ class SecuritiesSummary:
                 total_trade_buy=to_number(item.get("totalTradeBuy", 0.0)),
                 total_sell=to_int(item.get("totalSell", 0)),
                 total_trade_sell=to_number(item.get("totalTradeSell", 0.0)),
+                total_foreign_buy=to_int(item.get("totalForeignBuy", 0)),
+                total_foreign_buy_value=to_number(item.get("totalForeignBuyValue", 0.0)),
+                total_foreign_sell=to_int(item.get("totalForeignSell", 0)),
+                total_foreign_sell_value=to_number(item.get("totalForeignSellValue", 0.0)),
+                remain_foreign_room=to_int(item.get("remainForeignRoom", 0)),
+                total_foreign_room=to_int(item.get("totalForeignRoom", 0)),
+                total_deal=to_int(item.get("totalDeal", 0)),
+                total_deal_value=to_number(item.get("totalDealValue", 0.0)),
+                open_interest=to_number(item.get("openInterest", 0.0)),
+                settlement_price=to_number(item.get("settlementPrice", 0.0)),
             )
             for item in data
         ]

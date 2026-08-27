@@ -50,6 +50,7 @@ class EquityAccountBalance:
     advance_cash_t0: float = 0.0
     advance_cash_t1: float = 0.0
     hold_subscription: float = 0.0
+    dividend: float = 0.0
 
     @classmethod
     def from_dict(cls, data: dict) -> EquityAccountBalance:
@@ -80,6 +81,7 @@ class EquityAccountBalance:
             advance_cash_t0=to_float(data.get("advanceCashT0")),
             advance_cash_t1=to_float(data.get("advanceCashT1")),
             hold_subscription=to_float(data.get("holdSubscription")),
+            dividend=to_float(data.get("dividend")),
         )
 
 
