@@ -1,3 +1,3 @@
 """Single source of truth for the SSI SDK version."""
 
-__version__ = "3.2.0"
+__version__ = "3.2.1"
