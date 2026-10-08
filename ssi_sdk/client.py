@@ -25,9 +25,11 @@ Clients overview
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 from ssi_sdk.config import Config
+from ssi_sdk.models import OTPResponse, Token
 from ssi_sdk.services.account import AccountService, AsyncAccountService
 from ssi_sdk.services.market_data import AsyncMarketDataService, MarketDataService
 from ssi_sdk.services.portfolio import AsyncPortfolioService, PortfolioService
@@ -45,14 +47,28 @@ logger = logging.getLogger("ssi_sdk")
 
 
 def _make_config(config: Config | None, kwargs: dict) -> Config:
-    """Build or patch a Config object."""
+    """Build a Config, or derive one from ``config`` with ``kwargs`` applied.
+
+    The caller's ``Config`` is never mutated: it may be shared with other clients.
+
+    Raises:
+        TypeError: If ``kwargs`` names a field that ``Config`` does not have (a typo would
+            otherwise silently leave the default in place).
+    """
     if config is None:
         return Config(**kwargs)  # type: ignore[arg-type]
-    if kwargs:
-        for key, value in kwargs.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
-    return config
+    if not kwargs:
+        return config
+    unknown = sorted(set(kwargs) - {f.name for f in dataclasses.fields(Config)})
+    if unknown:
+        raise TypeError(f"Unknown Config option(s): {', '.join(unknown)}")
+    return dataclasses.replace(config, **kwargs)  # type: ignore[arg-type]
+
+
+def _expiry_of(token_manager) -> float:
+    """Epoch second after which the current credentials stop working (0 if unknown)."""
+    token = token_manager.token
+    return token.effective_expires_at if token is not None else 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -96,8 +112,163 @@ class AsyncAuth:
         """
         return self._config
 
+    # -- token management (explicit, so IDEs can complete and show docs) -----------
+
+    async def authenticate(
+        self, otp: str | None = None, transaction_id: str | None = None
+    ) -> Token:
+        """Authenticate using consumer credentials and OTP to obtain an access token.
+
+        Args:
+            otp: Normal OTP code typed by the user (SMS/email).
+            transaction_id: Smart OTP transaction id (from ``request_otp``),
+                used once the user approves the request on their device.
+                Mutually exclusive with ``otp``.
+        Returns:
+            The newly issued token.
+        Raises:
+            AuthenticationError: If the API key or secret is missing, both otp and
+                transaction_id are given, or (for Smart OTP) approval is pending/rejected.
+            APIError: If the request fails or the response is invalid.
+        """
+        return await self.token_manager.authenticate(otp=otp, transaction_id=transaction_id)
+
+    async def refresh(self) -> Token:
+        """Obtain a new access token using the current refresh token.
+
+        Concurrent callers are coalesced: only one request reaches the server, the others
+        reuse its result. Note the lock is per process — the server keeps one active session
+        per apiKey, so a login/refresh in another process invalidates this token.
+
+        Returns:
+            The newly refreshed token.
+        Raises:
+            AuthenticationError: If no refresh token is available.
+            ReauthenticationRequired: If the refresh token expired or the server rejected it
+                (401101/401103); the stored token is cleared and a new OTP is required.
+            APIError: If the request fails or the response is invalid.
+        """
+        return await self.token_manager.refresh()
+
+    async def ensure_authenticated(
+        self,
+        otp: str | None = None,
+        transaction_id: str | None = None,
+        poll_interval: float | None = None,
+        poll_max_retries: int | None = None,
+    ) -> str:
+        """Ensure a valid token is available, refreshing or authenticating as needed.
+
+        A still-valid token is returned as is. Otherwise: refresh if the refresh token is
+        usable, else log in with ``otp`` / ``transaction_id``.
+
+        Args:
+            otp: Normal OTP code typed by the user — verified in a single call.
+            transaction_id: Smart OTP transaction id (from ``request_otp``).
+                Since approval on the device is asynchronous, this polls
+                ``authenticate`` every ``poll_interval`` seconds until the user approves.
+                If polling runs out while the transaction is still valid, call again
+                with the same ``transaction_id``.
+            poll_interval: Seconds between Smart OTP polls (default ``Config.otp_poll_interval``).
+            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait``
+                divided by the interval).
+        Returns:
+            The current valid access token.
+        Raises:
+            ReauthenticationRequired: The session cannot be refreshed and no OTP was given.
+            AuthenticationError: No token and no OTP/transaction id, or Smart OTP approval
+                was not confirmed in time (``SmartOTPPendingError``) or was rejected
+                (``SmartOTPRejectedError``).
+            APIError: If a refresh or authentication request fails for another reason.
+        """
+        return await self.token_manager.ensure_authenticated(
+            otp, transaction_id, poll_interval, poll_max_retries
+        )
+
+    async def request_otp(self) -> dict:
+        """Request an OTP to be sent (normal OTP) or pushed for approval (Smart OTP).
+
+        Both account types share the same request endpoint — the server
+        decides how to deliver the OTP based on how the account was
+        registered (SMS/email vs Smart OTP push-approval).
+
+        Returns:
+            The raw OTP request response. Use ``request_otp_typed`` for a model.
+        Raises:
+            AuthenticationError: If the API key or secret is missing.
+            APIError: If the request fails or the response is invalid.
+        """
+        return await self.token_manager.request_otp()
+
+    async def request_otp_typed(self) -> OTPResponse:
+        """Request an OTP and return it as an :class:`OTPResponse`.
+
+        Returns:
+            The parsed response; ``transaction_id`` is set only for Smart OTP.
+        Raises:
+            AuthenticationError: If the API key or secret is missing.
+            APIError: If the request fails or the response is invalid.
+        """
+        return await self.token_manager.request_otp_typed()
+
+    async def set_token(self, token: Token) -> None:
+        """Manually set the access token (for advanced use cases).
+
+        Args:
+            token: The token to set as the current token.
+        """
+        return await self.token_manager.set_token(token)
+
+    @property
+    def token(self) -> Token | None:
+        """The current token.
+
+        Returns:
+            The current token, or None if no token is set.
+        """
+        return self.token_manager.token
+
+    @property
+    def access_token(self) -> str | None:
+        """The current access token string.
+
+        Returns:
+            The current access token, or None if no token is set.
+        """
+        return self.token_manager.access_token
+
+    @property
+    def is_token_expired(self) -> bool:
+        """Whether the current access token is missing or (nearly) expired.
+
+        A 30-second skew is applied so a token is never sent seconds before it dies; a
+        token with an unknown expiry (<= 0) is treated as expired.
+
+        Returns:
+            True if no token is set or it is expired/expiring, otherwise False.
+        """
+        return self.token_manager.is_token_expired
+
+    @property
+    def has_refresh_token(self) -> bool:
+        """Whether a refresh token is available.
+
+        Returns:
+            True if the current token carries a refresh token, otherwise False.
+        """
+        return self.token_manager.has_refresh_token
+
+    @property
+    def can_refresh(self) -> bool:
+        """Whether the current token can still be refreshed (refresh token not expired).
+
+        Returns:
+            True if a refresh token is present and has not expired.
+        """
+        return self.token_manager.can_refresh
+
     def __getattr__(self, name: str) -> object:
-        """Delegate unknown attributes to token_manager."""
+        """Fallback: anything not defined above is looked up on ``token_manager``."""
         return getattr(self.token_manager, name)
 
     async def close(self) -> None:
@@ -153,8 +324,161 @@ class Auth:
         """
         return self._config
 
+    # -- token management (explicit, so IDEs can complete and show docs) -----------
+
+    def authenticate(self, otp: str | None = None, transaction_id: str | None = None) -> Token:
+        """Authenticate using consumer credentials and OTP to obtain an access token.
+
+        Args:
+            otp: Normal OTP code typed by the user (SMS/email).
+            transaction_id: Smart OTP transaction id (from ``request_otp``),
+                used once the user approves the request on their device.
+                Mutually exclusive with ``otp``.
+        Returns:
+            The newly issued token.
+        Raises:
+            AuthenticationError: If the API key or secret is missing, both otp and
+                transaction_id are given, or (for Smart OTP) approval is pending/rejected.
+            APIError: If the request fails or the response is invalid.
+        """
+        return self.token_manager.authenticate(otp=otp, transaction_id=transaction_id)
+
+    def refresh(self) -> Token:
+        """Obtain a new access token using the current refresh token.
+
+        Concurrent callers are coalesced: only one request reaches the server, the others
+        reuse its result. Note the lock is per process — the server keeps one active session
+        per apiKey, so a login/refresh in another process invalidates this token.
+
+        Returns:
+            The newly refreshed token.
+        Raises:
+            AuthenticationError: If no refresh token is available.
+            ReauthenticationRequired: If the refresh token expired or the server rejected it
+                (401101/401103); the stored token is cleared and a new OTP is required.
+            APIError: If the request fails or the response is invalid.
+        """
+        return self.token_manager.refresh()
+
+    def ensure_authenticated(
+        self,
+        otp: str | None = None,
+        transaction_id: str | None = None,
+        poll_interval: float | None = None,
+        poll_max_retries: int | None = None,
+    ) -> str:
+        """Ensure a valid token is available, refreshing or authenticating as needed.
+
+        A still-valid token is returned as is. Otherwise: refresh if the refresh token is
+        usable, else log in with ``otp`` / ``transaction_id``.
+
+        Args:
+            otp: Normal OTP code typed by the user — verified in a single call.
+            transaction_id: Smart OTP transaction id (from ``request_otp``).
+                Since approval on the device is asynchronous, this polls
+                ``authenticate`` every ``poll_interval`` seconds until the user approves.
+                If polling runs out while the transaction is still valid, call again
+                with the same ``transaction_id``.
+            poll_interval: Seconds between Smart OTP polls (default ``Config.otp_poll_interval``).
+            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait``
+                divided by the interval).
+        Returns:
+            The current valid access token.
+        Raises:
+            ReauthenticationRequired: The session cannot be refreshed and no OTP was given.
+            AuthenticationError: No token and no OTP/transaction id, or Smart OTP approval
+                was not confirmed in time (``SmartOTPPendingError``) or was rejected
+                (``SmartOTPRejectedError``).
+            APIError: If a refresh or authentication request fails for another reason.
+        """
+        return self.token_manager.ensure_authenticated(
+            otp, transaction_id, poll_interval, poll_max_retries
+        )
+
+    def request_otp(self) -> dict:
+        """Request an OTP to be sent (normal OTP) or pushed for approval (Smart OTP).
+
+        Both account types share the same request endpoint — the server
+        decides how to deliver the OTP based on how the account was
+        registered (SMS/email vs Smart OTP push-approval).
+
+        Returns:
+            The raw OTP request response. Use ``request_otp_typed`` for a model.
+        Raises:
+            AuthenticationError: If the API key or secret is missing.
+            APIError: If the request fails or the response is invalid.
+        """
+        return self.token_manager.request_otp()
+
+    def request_otp_typed(self) -> OTPResponse:
+        """Request an OTP and return it as an :class:`OTPResponse`.
+
+        Returns:
+            The parsed response; ``transaction_id`` is set only for Smart OTP.
+        Raises:
+            AuthenticationError: If the API key or secret is missing.
+            APIError: If the request fails or the response is invalid.
+        """
+        return self.token_manager.request_otp_typed()
+
+    def set_token(self, token: Token) -> None:
+        """Manually set the access token (for advanced use cases).
+
+        Args:
+            token: The token to set as the current token.
+        """
+        return self.token_manager.set_token(token)
+
+    @property
+    def token(self) -> Token | None:
+        """The current token.
+
+        Returns:
+            The current token, or None if no token is set.
+        """
+        return self.token_manager.token
+
+    @property
+    def access_token(self) -> str | None:
+        """The current access token string.
+
+        Returns:
+            The current access token, or None if no token is set.
+        """
+        return self.token_manager.access_token
+
+    @property
+    def is_token_expired(self) -> bool:
+        """Whether the current access token is missing or (nearly) expired.
+
+        A 30-second skew is applied so a token is never sent seconds before it dies; a
+        token with an unknown expiry (<= 0) is treated as expired.
+
+        Returns:
+            True if no token is set or it is expired/expiring, otherwise False.
+        """
+        return self.token_manager.is_token_expired
+
+    @property
+    def has_refresh_token(self) -> bool:
+        """Whether a refresh token is available.
+
+        Returns:
+            True if the current token carries a refresh token, otherwise False.
+        """
+        return self.token_manager.has_refresh_token
+
+    @property
+    def can_refresh(self) -> bool:
+        """Whether the current token can still be refreshed (refresh token not expired).
+
+        Returns:
+            True if a refresh token is present and has not expired.
+        """
+        return self.token_manager.can_refresh
+
     def __getattr__(self, name: str) -> object:
-        """Delegate unknown attributes to token_manager."""
+        """Fallback: anything not defined above is looked up on ``token_manager``."""
         return getattr(self.token_manager, name)
 
     def close(self) -> None:
@@ -297,9 +621,21 @@ class AsyncStream:
     """
 
     def __init__(self, auth: AsyncAuth) -> None:
-        """Wire the async streaming service onto a WebSocket seeded with the Auth token."""
+        """Wire the async streaming service onto a self-renewing WebSocket (token from Auth)."""
         self._auth = auth
-        ws_client = AsyncWebSocketClient(auth.config)
+        token_manager = auth.token_manager
+
+        async def token_provider(force_refresh: bool) -> str:
+            """A valid token for each (re)connect; renewed first when the server refused it."""
+            if force_refresh and token_manager.has_refresh_token:
+                await token_manager.refresh()
+            return await token_manager.ensure_authenticated()
+
+        ws_client = AsyncWebSocketClient(
+            auth.config,
+            token_provider=token_provider,
+            expiry_provider=lambda: _expiry_of(token_manager),
+        )
         self.streaming: AsyncStreamingService = AsyncStreamingService(ws_client)
         self.token_manager = auth.token_manager
         if auth.token_manager.access_token:
@@ -330,9 +666,21 @@ class Stream:
     """
 
     def __init__(self, auth: Auth) -> None:
-        """Wire the sync streaming service onto a WebSocket seeded with the Auth token."""
+        """Wire the sync streaming service onto a self-renewing WebSocket (token from Auth)."""
         self._auth = auth
-        ws_client = WebSocketClient(auth.config)
+        token_manager = auth.token_manager
+
+        def token_provider(force_refresh: bool) -> str:
+            """A valid token for each (re)connect; renewed first when the server refused it."""
+            if force_refresh and token_manager.has_refresh_token:
+                token_manager.refresh()
+            return token_manager.ensure_authenticated()
+
+        ws_client = WebSocketClient(
+            auth.config,
+            token_provider=token_provider,
+            expiry_provider=lambda: _expiry_of(token_manager),
+        )
         self.streaming: StreamingService = StreamingService(ws_client)
         self.token_manager = auth.token_manager
         if auth.token_manager.access_token:
