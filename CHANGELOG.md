@@ -1,7 +1,6 @@
 # Changelog
 
-All notable changes to `ssi-sdk`. The version in `ssi_sdk/_version.py` is unchanged: the bump
-(minor, per the plan) is the SDK owner's call, so everything below is **Unreleased**.
+All notable changes to `ssi-sdk`. The version lives in `ssi_sdk/_version.py`.
 
 Items marked **BREAKING** change behaviour callers may depend on; the rest are additive or fixes.
 Renamed members keep their old name as a read-only alias that emits `DeprecationWarning`.
