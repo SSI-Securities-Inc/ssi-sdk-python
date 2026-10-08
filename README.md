@@ -20,6 +20,8 @@ Python SDK cho nền tảng giao dịch chứng khoán SSI. Hỗ trợ REST API 
 - [Streaming realtime](#6-streaming-realtime)
 - [Xử lý lỗi](#7-xử-lý-lỗi)
 - [Cấu hình nâng cao](#8-cấu-hình-nâng-cao)
+- [Gợi ý trong IDE và kiểu dữ liệu](#9-gợi-ý-trong-ide-và-kiểu-dữ-liệu)
+- [Nâng cấp & deprecation](#10-nâng-cấp--deprecation)
 
 ---
 
@@ -55,12 +57,22 @@ config = Config(
 | `api_secret` | `str` | `""` | API secret từ SSI |
 | `private_key` | `str` | `""` | Private key cho ký lệnh giao dịch |
 | `api_url` | `str` | `"https://api.ssi.com.vn"` | URL REST API |
-| `streaming_url` | `str` | `"wss://api.ssi.com.vn/ws/v3"` | URL WebSocket streaming |
+| `streaming_url` | `str` | `"wss://stream.ssi.com.vn/ws/v3"` | URL WebSocket streaming |
+| `trading_api_domain` | `str` | `"https://api.ssi.com.vn"` | URL của **REST API giao dịch** (đặt lệnh, FCO, tài khoản, danh mục: `/api/v3/trading/*`, `/api/v3/account/*`), cùng kiểu với `api_url`. Giữ mặc định thì **theo `api_url`** (đổi `api_url` sang môi trường khác là trading đi theo); đặt host khác để tách riêng. Auth và dữ liệu thị trường luôn dùng `api_url`. Chấp nhận cả `host`/`host:port` (tự thêm `https://`). Token và rate limit dùng chung. URL thực tế: `Config.trading_api_url` |
+| `trading_ws_domain` | `str` | `"wss://api.ssi.com.vn/ws/v3/trading"` | URL WebSocket đặt lệnh (thử nghiệm), cùng kiểu với `streaming_url`. Đổi khi server đổi tên miền; chấp nhận cả `host`/`host:port` (tự thêm `wss://` và `/ws/v3/trading`). URL thực tế: `Config.trading_ws_url`. Mọi cấu hình khác dùng chung `Config` |
 | `timeout` | `int` | `60` | Timeout request (giây) |
 | `max_retries` | `int` | `5` | Số lần retry tối đa |
 | `retry_delay` | `float` | `2.0` | Delay cơ sở giữa các lần retry (exponential backoff, giây) |
 | `rate_limit_per_second` | `int` | `10` | Giới hạn request/giây (0 = không giới hạn) |
 | `log_level` | `str` | `"INFO"` | Mức log: DEBUG, INFO, WARNING, ERROR, CRITICAL |
+| `user_agent` | `str \| None` | `None` | User-Agent cho HTTP và payload lệnh (mặc định giữ nguyên như trước) |
+| `auto_reconnect` | `bool` | `True` | Tự mở lại socket streaming khi bị rớt (xem mục 6) |
+| `otp_poll_interval` | `float` | `5.0` | Khoảng cách giữa các lần poll Smart OTP (giây) |
+| `otp_poll_max_wait` | `float` | `60.0` | Tổng thời gian tối đa chờ approve Smart OTP (giây) |
+
+> `api_url`, `streaming_url`, `trading_api_domain` và `trading_ws_domain`: không truyền, `None` hoặc `""` đều lấy giá trị mặc định trong `ssi_sdk/constant.py`.
+
+> `repr(Config(...))` che `api_secret` và `private_key`; không bao giờ log token/secret ở mọi mức log.
 
 ---
 
@@ -211,9 +223,16 @@ tự quyết định cách gửi OTP dựa trên cách tài khoản đã đăng 
 không đổi được runtime):
 
 ```python
-result = auth.request_otp()
-print(result)
+otp = auth.request_otp_typed()     # OTPResponse: message, transaction_id
+print(otp.message)
+
+# transaction_id CHỈ có với Smart OTP (push-approval). OTP SMS/email không có
+# trường này (otp.transaction_id là None) — chỉ cần nhập mã nhận được vào otp=...
+if otp.transaction_id:
+    ...  # tiếp tục với ensure_authenticated(transaction_id=...) (mục 1.4)
 ```
+
+`auth.request_otp()` vẫn trả về dict thô của server (không đổi).
 
 **Tài khoản đã kích hoạt Smart OTP có 2 cách để xác thực:**
 
@@ -252,17 +271,39 @@ access_token = auth.ensure_authenticated()
 access_token = auth.ensure_authenticated(otp="222222")
 
 # 3) Smart OTP dạng push-approval — truyền transaction_id lấy từ
-# request_otp(). Vì việc approve trên thiết bị là bất đồng bộ, SDK tự
-# động poll access_token mỗi poll_interval giây, tối đa poll_max_retries lần,
-# hoặc raise AuthenticationError nếu hết số lần mà vẫn chưa approve.
-otp_result = auth.request_otp()
-transaction_id = otp_result["transactionId"]
-access_token = auth.ensure_authenticated(
-    transaction_id=transaction_id,
-    poll_interval=5,      # mặc định 5s (SMART_OTP_POLL_INTERVAL)
-    poll_max_retries=5,   # mặc định 5 lần (SMART_OTP_POLL_MAX_RETRIES)
-)
+# request_otp_typed(). Việc approve trên thiết bị là bất đồng bộ nên SDK tự
+# poll mỗi Config.otp_poll_interval giây (mặc định 5s), tổng tối đa
+# Config.otp_poll_max_wait giây (mặc định 60s).
+otp = auth.request_otp_typed()
+access_token = auth.ensure_authenticated(transaction_id=otp.transaction_id)
+# Có thể ghi đè từng lần gọi: poll_interval=..., poll_max_retries=...
 ```
+
+Kết quả poll Smart OTP:
+
+| Tình huống | Exception |
+|------------|-----------|
+| Hết thời gian mà user chưa approve | `SmartOTPPendingError` — transaction còn hiệu lực thì gọi lại `ensure_authenticated(transaction_id=...)` với cùng `transaction_id` |
+| User từ chối / transaction hết hạn / không tồn tại (401113, 401115, 401116) | `SmartOTPRejectedError` — dừng ngay, không poll tiếp |
+
+Khi token **không refresh được** (refresh token hết hạn, hoặc server từ chối 401101/401103),
+SDK xoá token và ném `ReauthenticationRequired` (là con của `AuthenticationError`) —
+cần OTP mới, **không retry**. Server coi việc dùng lại refresh token là rò rỉ và thu hồi
+**toàn bộ** session của `apiKey`.
+
+> **Cảnh báo — chỉ 1 session active cho mỗi `apiKey`:** đăng nhập hoặc refresh ở
+> process/máy khác sẽ làm token của process này mất hiệu lực. Lock trong SDK chỉ
+> chống refresh trùng *trong cùng một process*; nhiều process dùng chung một `apiKey`
+> sẽ đá nhau và có thể dẫn tới `ReauthenticationRequired`.
+
+### 1.4b. Gán token thủ công
+
+```python
+from ssi_sdk.models import Token
+auth.set_token(Token(access_token="...", expires_at=..., refresh_token="...", refresh_token_expires_at=...))
+```
+
+Dùng khi token do nơi khác cấp (vd cache). Token **không có hạn** (`expires_at <= 0`) bị coi là đã hết hạn.
 
 ### 1.5. Kiểm tra trạng thái token
 
@@ -271,7 +312,12 @@ print(auth.token)              # Token object hoặc None
 print(auth.access_token)       # Access token string hoặc None
 print(auth.is_token_expired)   # True/False
 print(auth.has_refresh_token)  # True/False
+print(auth.can_refresh)        # refresh token còn hạn?
+print(auth.token.effective_expires_at)  # min(access, refresh) — mốc phải đăng nhập lại
 ```
+
+`expiresAt`/`refreshExpiresAt` do server trả bằng **giây** (giá trị >= 1e10 được hiểu là mili-giây
+và tự đổi). Token được coi là hết hạn sớm 30 giây; token không rõ hạn (`expires_at <= 0`) coi là đã hết hạn.
 
 ---
 
@@ -290,7 +336,9 @@ for acc in accounts:
 
 **Trả về:** `list[Account]` — mỗi `Account` có:
 - `account_no: str` — Số tài khoản
-- `account_type: AccountType` — Loại tài khoản (`EQUITY`, `EQUITY_MARGIN`, `DERIVATIVE`)
+- `account_type: AccountType | str | None` — Loại tài khoản (`EQUITY`, `EQUITY_MARGIN`, `DERIVATIVE`);
+  giá trị server gửi mà SDK chưa biết được giữ nguyên dạng chuỗi, thiếu thì là `None`
+  (không còn mặc định `Cash`). Khi không có tài khoản server trả `{"code": 204}` → danh sách rỗng.
 
 ---
 
@@ -364,8 +412,8 @@ for candle in ohlc:
 | `get_ohlc_15minute_historical(symbol, from_date, to_date, page, size)` | 15 phút |
 | `get_ohlc_1hour_historical(symbol, from_date, to_date, page, size)` | 1 giờ |
 | `get_ohlc_1day_historical(symbol, from_date, to_date, page, size)` | 1 ngày |
-| `get_ohlc_1week_historical(symbol, from_date, to_date, page, size)` | 1 tuần |
-| `get_ohlc_1month_historical(symbol, from_date, to_date, page, size)` | 1 tháng |
+| ~~`get_ohlc_1week_historical`~~ | **Không còn hỗ trợ** — server từ chối (400210); luôn ném `ValidationError`. Dùng nến ngày rồi tự gộp |
+| ~~`get_ohlc_1month_historical`~~ | **Không còn hỗ trợ** (như trên) |
 
 ```python
 # OHLC 1 ngày lịch sử
@@ -380,6 +428,30 @@ ohlc = data.market_data.get_ohlc_1day_historical(
 
 **Trả về:** `list[OHLCData]` — mỗi `OHLCData` có:
 - `symbol`, `trading_date`, `open_price`, `high_price`, `low_price`, `close_price`, `volume`, `value`
+
+**Lấy toàn bộ các trang:** endpoint OHLC không trả số trang, và trả **mới nhất trước**.
+
+```python
+from ssi_sdk.enums import Timeframe
+
+# Tất cả nến trong khoảng — tự lặp trang cho tới khi gặp trang rỗng/ngắn
+bars = data.market_data.get_ohlc_all(
+    "SSI", Timeframe.DAY_1, "2026/01/01", "2026/03/27", size=1000, ascending=True
+)
+
+# Hoặc duyệt từng nến mà không giữ hết trong bộ nhớ
+for bar in data.market_data.iter_ohlc("SSI", Timeframe.MINUTE_5, "2026/03/27", "2026/03/27"):
+    ...
+# AsyncMarketDataService: `async for bar in market_data.iter_ohlc(...)`
+```
+
+Mỗi lần gọi chỉ nhận **một mã** (chữ+số), timeframe hợp lệ: `1d, 1m, 3m, 5m, 15m, 1h`;
+`from <= to`, định dạng `YYYY/MM/DD` hoặc `YYYY/MM/DD HH:MM:SS`. Endpoint trả `{"code": 204}`
+khi rỗng — SDK trả danh sách rỗng. `securitiesSummary`/`masterdata` tự lặp theo `pagesCount`.
+
+> **Lưu ý theo hành vi server:** nến phút/giờ mà `to_date` ở tương lai sẽ được SDK cắt về cuối ngày hôm nay (server trả
+> rỗng nếu `to` sau hôm nay); `page`/`size` phải >= 1; dữ liệu "hôm nay" của `securities_summary`/`master_data` có thể bị
+> cache phía server tới 1 giờ; subscribe nhiều mã được SDK tự chia thành nhiều frame < 4096 byte.
 
 **Tham số historical:**
 
@@ -612,8 +684,20 @@ Truy cập qua `trading.trading` (client `Trading` / `AsyncTrading`).
 | | `get_fco_by_date(account_no, from_date, to_date, page_index, page_size)` | `FCOListResponse` |
 | | `get_fco_by_id(account_no, fco_id)` | `FCOInfo \| None` |
 | | `get_fco_order_book(fco_id, page_index, page_size)` | `FCOOrderBookResponse` |
+| | `get_fco_status_history(fco_id)` | `list[FCOStatusHistoryItem]` |
 
 ### 5.1. Đặt lệnh
+
+> **`device_id` luôn tự lấy theo máy** và không cấu hình được. Server gắn lệnh với thiết bị, nên mọi lệnh/FCO đều mang `deviceId`
+> của máy đang chạy: **machine id gốc của hệ điều hành**, không băm (macOS `IOPlatformUUID`, Linux `/etc/machine-id`,
+> Windows `MachineGuid`; không có thì địa chỉ MAC), lấy bằng `ssi_sdk.utils.get_device_id()`. Id này đi nguyên văn tới server.
+> `Config(device_id=...)` không còn tồn tại (truyền vào sẽ báo `TypeError`).
+>
+> Giá gửi dạng chuỗi thập phân (không dùng ký hiệu mũ), số lượng là số nguyên dương.
+>
+> **Idempotency:** truyền `client_request_id="..."` (tối đa 20 ký tự) để có thể đối soát khi lệnh bị timeout;
+> không truyền thì SDK sinh ngẫu nhiên. Lệnh **không bao giờ được tự retry** khi timeout. Gửi lại cùng
+> id trong ngày bị từ chối `409` → `DuplicateRequestError`.
 
 ```python
 from ssi_sdk.enums import OrderSide, OrderType
@@ -731,6 +815,28 @@ result = trading.trading.cancel_order_by_order_id(
 ```
 
 **Trả về:** `CancelOrderResponse` — có: `client_cancel_id`, `order_id`, `client_request_id`, `status`
+
+### 5.3b. Đặt / huỷ nhiều lệnh một lượt (batch)
+
+```python
+res = trading.trading.place_batch_orders([
+    dict(account_no="1234561", symbol="SSI", side=OrderSide.BUY, quantity=100,
+         price=66000, order_type=OrderType.LO),
+    dict(account_no="1234561", symbol="VNM", side=OrderSide.BUY, quantity=50,
+         price=70500, order_type=OrderType.LO, client_request_id="my-key-2"),
+])
+for r in res.results:                       # mỗi lệnh một kết quả
+    print(r.client_request_id, r.order_id, r.status, r.success, r.error_code)
+
+trading.trading.cancel_batch_orders([
+    {"account_no": "1234561", "order_id": "ORDER_ID"},
+    {"account_no": "1234561", "client_request_id": "my-key-2"},
+])
+```
+
+Tối đa **20 lệnh**/batch (mặc định của server; đổi bằng `Config(max_batch_orders=...)` nếu server nâng giới hạn); SDK kiểm tra toàn bộ trước, một lệnh sai thì cả batch bị từ chối (server cũng vậy).
+`batchRequestId` (ngẫu nhiên, trùng trong ngày → `409` `DuplicateRequestError`) và `batchRequestTime` (thời điểm hiện tại,
+lệch cửa sổ → `400111`) do SDK sinh; chữ ký tính trên toàn body; không bao giờ tự retry.
 
 ### 5.4. Sức mua/bán tối đa
 
@@ -953,7 +1059,73 @@ Truy cập qua `stream.streaming` (client `Stream` / `AsyncStream`). Cần gọi
 | `on_trading` | `Callable[[OrderStatusMessage \| FCOOrderUpdateMessage \| PortfolioMessage], Any]` | Nhận trading events |
 | `on_heartbeat` | `Callable[[HeartbeatMessage], Any]` | Nhận heartbeat |
 
-> **Lưu ý:** Tất cả subscribe/unsubscribe methods đều hỗ trợ tham số `on_response` (callback cho response message).
+> **Lưu ý:** Tất cả subscribe/unsubscribe methods đều hỗ trợ tham số `on_response` — callback cho
+> **ack** của server (`{"method","channel","status","message"}`). Nó **không** thay thế `on_data`/`on_trading`.
+
+**Bổ sung:**
+
+| Method | Mô tả |
+|--------|-------|
+| `subscribe_market(symbols)` | Master data (trần/sàn/tham chiếu) → `MarketDataMessage` |
+| `subscribe_market_flag()` / `unsubscribe_market_flag()` | Cờ phiên (ATO/LO/ATC…) toàn bộ sàn → `MarketFlagMessage(board, trading_time, flag)`; `flag` giữ nguyên chuỗi server gửi, `board` có cả `DERIVATIVES` |
+| `subscribe_index_trade(indices, interval=None)` | Tick của **chính chỉ số** (`trade.index.<mã>`), khác `subscribe_index` (trade của các mã thành phần) |
+| `subscribe_index_summary(indices)` | `indexsummary.<mã>` (`IndexSummaryMessage`; `data` giữ nguyên field server gửi) |
+| `list_subscription()` | Hỏi server đang subscribe những topic nào → `{"trading": [...], "data": [...]}` |
+
+`interval` của `subscribe_symbol_ohlcv` / `subscribe_index_trade` chỉ nhận **`tick`, `1m`, `5m`**
+(không có 3m); `trade.index` cần mã cụ thể (không dùng `*`/danh sách/khoảng khi có interval).
+Topic được kiểm tra trước khi gửi — mã chứa ký tự lạ, hoặc loại topic chưa hỗ trợ (`asset.*`, `margin.*`), bị `ValidationError`.
+
+**Tự kết nối lại:** khi socket rớt, SDK mở lại với backoff luỹ thừa + jitter (tối đa 60s), **lấy token mới**
+mỗi lần kết nối (`Authorization: Bearer`, không đưa token lên URL), tự **subscribe lại** mọi topic đã đăng ký, và chủ động
+mở lại socket trước khi token hết hạn (server chỉ kiểm tra JWT lúc connect, không đóng socket khi token hết hạn).
+Server từ chối kết nối bằng frame `{"code","msg"}`: `401/403` → refresh token đúng 1 lần rồi thử lại, vẫn lỗi thì
+`AuthenticationError`; `429` (quá 10 kết nối/client) → chờ tối thiểu 30s; `5xx` → backoff thường.
+Tắt bằng `Config(auto_reconnect=False)`. `disconnect()` đóng hẳn socket và dừng tác vụ nền.
+
+**Message theo `eventType`:** `orderEvent` → `OrderStatusMessage`, `orderMatchEvent` → `OrderMatchMessage`
+(khớp lệnh), `clientPortfolioEvent` → `PortfolioMessage` (chỉ tài khoản phái sinh); loại lạ trả về dict thô.
+
+### 6.0. Muốn nhận gì thì dùng method nào
+
+| Muốn nhận | Subscribe / Unsubscribe | Message | Callback có kiểu |
+|-----------|-------------------------|---------|------------------|
+| Khớp lệnh thị trường của mã | `subscribe_symbol_trade` / `unsubscribe_symbol_trade` (= `subscribe_trades` / `unsubscribe_trades`) | `TradeMessage` | `on_data` |
+| Nến `tick`/`1m`/`5m` của mã | `subscribe_symbol_ohlcv` / `unsubscribe_symbol_ohlcv` (= `subscribe_candles` / `unsubscribe_candles`) | `TradeMessage` (tick) / `IntervalMessage` | `on_data` |
+| Giá mua/bán (bid/ask) | `subscribe_symbol_quote` / `unsubscribe_symbol_quote` (= `subscribe_quotes` / `unsubscribe_quotes`) | `QuoteMessage` | `on_data` |
+| Room khối ngoại | `subscribe_symbol_room` / `unsubscribe_symbol_room` (= `subscribe_foreign_room` / `unsubscribe_foreign_room`) | `ForeignRoomMessage` | `on_data` |
+| Thoả thuận | `subscribe_symbol_put_through` / `unsubscribe_symbol_put_through` (= `subscribe_put_through` / `unsubscribe_put_through`) | `PutMessage` | `on_data` |
+| Lô lẻ | `subscribe_symbol_odd_lot` / `unsubscribe_symbol_odd_lot` (= `subscribe_odd_lot` / `unsubscribe_odd_lot`) | `OddLotMessage` | `on_data` |
+| Trade+quote+room của **các mã thành phần** một sàn | `subscribe_board` / `unsubscribe_board` (= `subscribe_exchange_trades` / `unsubscribe_exchange_trades`) | như trên | `on_data` |
+| Trade+quote+room của **các mã thành phần** một chỉ số | `subscribe_index` / `unsubscribe_index` (= `subscribe_index_constituents` / `unsubscribe_index_constituents`) | như trên | `on_data` |
+| **Tick của chính chỉ số** | `subscribe_index_trade` / `unsubscribe_index_trade` (= `subscribe_index_ticks` / `unsubscribe_index_ticks`) | `IndexTickMessage` (tick) / `IntervalMessage` (nến 1m/5m) | `on_data` |
+| Tổng hợp chỉ số (`indexsummary.VN30`) | `subscribe_index_summary` / `unsubscribe_index_summary` | `IndexSummaryMessage` (`index`, `data`, `get(...)`) | `on_index_summary` |
+| Giá trần/sàn/tham chiếu | `subscribe_market` / `unsubscribe_market` (= `subscribe_master_data` / `unsubscribe_master_data`) | `MarketDataMessage` | `on_data` |
+| **Cờ phiên** (ATO/LO/ATC…) | `subscribe_market_flag` / `unsubscribe_market_flag` (= `subscribe_session_flag` / `unsubscribe_session_flag`) | `MarketFlagMessage` | `on_market_flag` |
+| Trạng thái lệnh **và** khớp lệnh | `subscribe_order_status` / `unsubscribe_order_status` (= `subscribe_orders` / `unsubscribe_orders`) | `OrderStatusMessage`, `OrderMatchMessage` | `on_order`, `on_order_match` |
+| Vị thế phái sinh | `subscribe_portfolio` / `unsubscribe_portfolio` (= `subscribe_positions` / `unsubscribe_positions`) | `PortfolioMessage` | `on_portfolio` |
+| Danh sách đang subscribe | `list_subscription()` | `{"data": [...], "trading": [...]}` | — |
+| Huỷ **tất cả** | `unsubscribe_all()` | — | — |
+
+Mã chỉ số/mã chứng khoán được SDK tự viết hoa (`vn30` → `trade.index.VN30`, `indexsummary.VN30`); tick của chính chỉ số là
+`subscribe_index_trade`, dữ liệu đầy đủ của chỉ số là `subscribe_index_summary`. Tài liệu public không liệt kê field của
+`indexsummary`, nên `IndexSummaryMessage.data` giữ nguyên payload (đọc bằng `m.get("key1", "key2")`).
+
+`on_data` / `on_trading` vẫn nhận **mọi** message của kênh; các callback có kiểu (`on_market_flag`, `on_index_summary`, `on_order`,
+`on_order_match`, `on_portfolio`) chỉ nhận đúng loại của chúng, dùng cùng lúc cũng được. Đặt callback **không** tự
+subscribe — vẫn phải gọi method `subscribe_*` tương ứng.
+
+```python
+stream.streaming.on_market_flag = lambda m: print(m.board, m.flag, m.trading_time)
+stream.streaming.on_order_match = lambda m: print("khớp", m.symbol, m.match_qty, m.match_price)
+stream.streaming.subscribe_session_flag()
+stream.streaming.subscribe_orders("1234561")
+```
+
+**Trạng thái kết nối:** `stream.streaming.is_connected`, `.reconnect_count`, `.last_error`, và
+`on_connection = lambda e: ...` nhận `ConnectionEvent(state, reconnect_count, error)` với `state` là `connected`,
+`reconnected` (đã subscribe lại), `disconnected` (rớt, sẽ tự nối lại) hoặc `failed` (không phục hồi được, vd cần OTP mới).
+Callback chạy trên thread/task của SDK nên giữ ngắn.
 
 ### 6.1. Thiết lập callback
 
@@ -1057,6 +1229,35 @@ stream.streaming.ping()
 stream.streaming.ping(interval=30)
 ```
 
+### 6.7. Đặt lệnh qua WebSocket (thử nghiệm)
+
+> **Thử nghiệm.** Server (`FastConnect.Trading.StreamApi`, `/ws/v3/trading`) chưa được công bố
+> release, nên tính năng này **không** nằm trong `Trading`/`Stream` và không export từ `ssi_sdk`.
+> Chỉ dùng với môi trường đã được xác nhận hỗ trợ. URL lấy từ `Config.trading_ws_url` (domain: `Config.trading_ws_domain`).
+
+```python
+from ssi_sdk.experimental import trading_ws          # async: async_trading_ws
+
+ws = trading_ws(auth)                                # kết nối wss, token ở header
+ack = ws.place_order("1234561", "SSI", OrderSide.BUY, 100, 66000, OrderType.LO,
+                     client_request_id="my-key-1")   # ack orderStatus "PD"
+ws.client.on_event = print                           # frame không có id (vd lỗi định dạng)
+ws.close()
+```
+
+- Mỗi lệnh là một frame `{id, method, params, signature?, timestamp}`. `params` được serialize **một lần**,
+  ký (RSA-SHA256) rồi chèn nguyên văn; ký trên chuỗi khác sẽ bị server trả `401013`.
+- Method ghi trạng thái (`order.place/amend/cancel/batchNew/batchCancel`, `fco.place/cancel`) cần
+  `Config.private_key`; thiếu thì **không gửi**. Query (`query.*`, `fco.list/orderbook/statusHistory`) không ký.
+- `place_order` trả **ack** (`PD`); kết quả thật đến qua topic `order.<account>` (mục 6.4). Một `id` có thể nhận
+  nhiều frame: dùng `ws.client.stream(method, params)` để đọc cả frame thứ hai.
+- Lỗi: `TradingWSError` (`status`, `error_code`, `server_message`), ví dụ `RATE_LIMIT_EXCEEDED` (429),
+  `METHOD_NOT_FOUND` (404), `401013`. `ws.client.rate_limit` giữ `limit/remaining/resetMs` của phản hồi gần nhất.
+- **Không bao giờ tự retry** khi timeout (lệnh có thể đã được nhận): đối soát qua event hoặc `query_order_book`.
+  Batch tối đa `Config.max_batch_orders` lệnh (mặc định 20); `batchRequestId`/`batchRequestTime` do SDK sinh. Chỉ `wss://`.
+- Tên tham số của `query_*` lấy theo tham số REST tương ứng (tài liệu server không liệt kê riêng).
+- Nhận event lệnh trên chính socket này: `ws.subscribe_order_events(account_no)` rồi đọc ở `ws.client.on_event` (frame `{channel, topic, data}`); `*` chỉ hợp lệ khi token sở hữu mọi tài khoản, nếu không ack báo `Denied (account)`.
+
 ### 6.6. Ví dụ streaming hoàn chỉnh (async)
 
 ```python
@@ -1113,10 +1314,13 @@ except SSIError as e:
 |-----------|-------|
 | `SSIError` | Base exception — có `message`, `code`, `status_code`, `response_body`, `headers` |
 | `AuthenticationError` | Xác thực thất bại (sai credentials, token hết hạn) |
-| `APIError` | API trả về lỗi — có thêm `status_code`, `response_body` |
+| `APIError` | API trả về lỗi — `code` là **mã lỗi của server** (vd `400107`; nếu server không gửi thì là HTTP status dạng chuỗi), `status_code` là HTTP status, `response_body` đã che dữ liệu nhạy cảm |
+| `DuplicateRequestError` | (con của `APIError`) HTTP 409 — `clientRequestId`/`batchRequestId` đã dùng trong ngày |
+| `SmartOTPPendingError`, `SmartOTPRejectedError` | (con của `AuthenticationError`) Smart OTP chưa approve kịp / bị từ chối hoặc hết hạn |
+| `ReauthenticationRequired` | (con của `AuthenticationError`) Không refresh được; cần OTP mới |
 | `WebSocketError` | Lỗi kết nối hoặc giao tiếp WebSocket |
 | `ValidationError` | Lỗi validate input |
-| `RateLimitError` | Vượt quá giới hạn request — có thêm `retry_after` |
+| `RateLimitError` | Vượt quá giới hạn request — có `status_code`, `retry_after`, `limit`, `remaining` (server không gửi thời điểm reset nên `reset` thường là `None`) |
 
 ```python
 from ssi_sdk.exceptions import APIError, AuthenticationError, RateLimitError
@@ -1164,6 +1368,66 @@ config = Config(
     rate_limit_per_second=5,
 )
 ```
+
+---
+
+## 9. Gợi ý trong IDE và kiểu dữ liệu
+
+SDK có `py.typed` (PEP 561), nên VS Code/Pylance/PyCharm/mypy dùng được kiểu của nó:
+
+- **Mọi method public** có docstring đủ `Args` / `Returns` / `Raises` (rê chuột hoặc `Ctrl+Space`/`Shift+Tab`).
+  Các method chuyển tiếp của `Auth` (`authenticate`, `ensure_authenticated`, `refresh`, ...) được khai báo tường minh,
+  không còn đi qua `__getattr__`.
+- **Giá**: tham số giá nhận `PriceLike` = `Decimal | int | float | str`; trường số của FCO nhận `NumberLike`.
+- **Giá trị cố định** được gợi ý bằng `Literal`: `interval="tick" | "1m" | "5m"`; trạng thái/loại/toán tử FCO nhận enum **hoặc**
+  chuỗi hợp lệ (`FCOStatusLike`, `FCOTypeLike`, `FCOOperatorLike`).
+- **Batch**: `place_batch_orders` nhận `list[BatchPlaceOrderItem]`, `cancel_batch_orders` nhận `list[BatchCancelOrderItem]`
+  (`TypedDict` — IDE gợi ý từng khoá và báo khoá thiếu/sai).
+- **Callback streaming** có chữ ký theo kiểu message: `s.on_market_flag = lambda m: m.flag` (IDE biết `m` là
+  `MarketFlagMessage`); `on_data` nhận `DataMessage`, `on_trading` nhận `TradingMessage`.
+- **Enum** giải thích từng giá trị trong docstring của lớp (`OrderType`, `OrderStatus`, `FCOType`, `Board`, ...); các model
+  phản hồi có mục `Attributes`.
+
+```python
+from ssi_sdk.models import BatchPlaceOrderItem
+
+orders: list[BatchPlaceOrderItem] = [
+    {"account_no": "1234561", "symbol": "SSI", "side": OrderSide.BUY, "quantity": 100,
+     "price": Decimal("27000"), "order_type": OrderType.LO},   # thiếu khoá bắt buộc -> IDE báo lỗi
+]
+```
+
+---
+
+## 10. Nâng cấp & deprecation
+
+**Thay đổi hành vi (có thể ảnh hưởng code hiện có):**
+
+| Khu vực | Thay đổi |
+|---------|----------|
+| Đặt/sửa/huỷ lệnh, FCO | `deviceId` luôn là id của máy đang chạy (`get_device_id()`), không cấu hình được |
+| FCO | `from`/`to` khi đặt lệnh bắt buộc dạng `YYYY/MM/DD HH:MM:SS`, `from <= to`, cửa sổ tối đa 31 ngày (server không kiểm, SDK kiểm) |
+| Retry | Chỉ `GET` được retry khi timeout; `POST/PUT/DELETE` (auth, lệnh, FCO) không bao giờ |
+| Lỗi | `APIError.code` = mã lỗi server (giữ `status_code` cho HTTP status); HTTP 200 + `code` khác 200/204 → `APIError` |
+| Token | `expires_at <= 0` coi là hết hạn; refresh có lock (single-flight); không refresh được → `ReauthenticationRequired` |
+| Account | `account_type` không còn mặc định `Cash` (thiếu → `None`; lạ → chuỗi gốc) |
+| Order book | `filled_quantity`/`cancel_quantity` đọc `filledQty`/`cancelQty`; `os_quantity` là `None` (server không trả) |
+| Giá | Giá lệnh/FCO gửi dạng chuỗi thập phân; `PlaceOrderRequest.price` giữ nội bộ là `Decimal` |
+| Streaming | `on_response` không ghi đè `on_data`; interval chỉ `tick/1m/5m`; `OrderStatusMessage.price`/`avg_price` là `Decimal` (hoặc chuỗi cho ATO/ATC/MP) |
+| `require_non_empty` | `0`/`False` không còn bị coi là "thiếu" (kiểm tra khoảng giá trị dùng `require_positive`…) |
+
+**Deprecated (còn dùng được, phát `DeprecationWarning`):**
+
+| Cũ | Mới |
+|----|-----|
+| `MaxBuySellResponse.purchase_power` (str) | `purchasing_power` (`int \| None`) |
+| `DerivativeAccountBalance.cash_withdrawable_ssi` / `_vsdc` | `withdrawable_ssi` / `withdrawable_vsdc` |
+| `OrderStatusMessage.modify_time` | `modified_time` |
+| `PortfolioMessage.total_asset` / `cash_balance` / `stock_value` | server không gửi — luôn `None` |
+| `get_ohlc_1week_historical` / `get_ohlc_1month_historical` | server không hỗ trợ — ném `ValidationError` |
+
+**Chưa hỗ trợ:** tải OHLC hàng loạt (`download_ohlc_1minute`, `download_ohlc_1day`: luôn ném `NotImplementedError`, server chưa có endpoint `data/file`).
+Trading WebSocket (`/ws/v3/trading`) có ở dạng thử nghiệm: mục 6.7.
 
 ---
 
@@ -1774,6 +2038,10 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `message` | `str` | Thông báo |
 
 ### Clients & Services
+
+> **Hướng dẫn cho dev/AI agent**: [`AGENT.md`](AGENT.md). **Integration test với API thật**: [`tests/integration/README.md`](tests/integration/README.md).
+>
+> **Danh mục đầy đủ mọi method public** (chữ ký + mô tả, sinh tự động từ code): [`API_METHODS.md`](API_METHODS.md).
 
 | Client | Service | Truy cập | Mô tả |
 |--------|---------|---------|-------|
