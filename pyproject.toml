@@ -56,4 +56,12 @@ select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]  # always test the working tree, never an installed copy
 testpaths = ["tests"]
+markers = [
+    "integration: talks to the real API (needs SSI_IT=1 and credentials; see tests/integration/README.md)",
+    "write: places, modifies or cancels real orders (needs SSI_IT_WRITE=yes-place-real-orders)",
+    "market_data: market data endpoints",
+    "streaming: real WebSocket streaming",
+    "experimental: experimental features (trading WebSocket)",
+]
