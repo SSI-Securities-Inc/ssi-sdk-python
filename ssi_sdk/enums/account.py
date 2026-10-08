@@ -1,10 +1,16 @@
 """Enums for SSI API."""
 
-from enum import Enum
+from ssi_sdk.enums.base import BaseEnum
 
 
-class AccountType(Enum):
-    """Enum representing different account types."""
+class AccountType(BaseEnum):
+    """Account type as the server names it (``accountType``).
+
+    Members:
+        ``EQUITY``: ``"Cash"`` cash equity account.
+        ``EQUITY_MARGIN``: ``"Margin"`` margin equity account.
+        ``DERIVATIVE``: ``"Derivative"`` derivatives account.
+    """
 
     EQUITY = "Cash"
     EQUITY_MARGIN = "Margin"
