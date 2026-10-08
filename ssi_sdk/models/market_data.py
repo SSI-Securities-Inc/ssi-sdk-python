@@ -7,12 +7,28 @@ from typing import Any
 
 from ssi_sdk.constant import DEFAULT_PAGE, DEFAULT_SIZE
 from ssi_sdk.enums import Board, Timeframe
-from ssi_sdk.utils import to_float, to_int, to_number
+from ssi_sdk.utils import to_float, to_int, to_number, to_opt_float, to_opt_int
+
+
+def _to_board(raw: Any) -> Board | str | None:
+    """Parse a board leniently: known value -> ``Board``, unknown -> raw string, empty -> None."""
+    if raw is None or raw == "":
+        return None
+    return Board.from_value(raw) or str(raw)
+
+
+def _blank_to_none(value: Any) -> Any:
+    """Map the server's empty-string "no value" marker to None."""
+    return None if value is None or (isinstance(value, str) and not value.strip()) else value
 
 
 @dataclass
 class DownloadDataRequest:
-    """Bulk download data request."""
+    """Bulk download data request.
+
+    Deprecated: the server has no ``data/file`` endpoint yet and its final response shape
+    (``dataLink`` vs ``files[]``) is undecided, so nothing uses this model. Do not build on it.
+    """
 
     symbol: str = ""
     timeframe: Timeframe = Timeframe.DAY_1
@@ -31,7 +47,11 @@ class DownloadDataRequest:
 
 @dataclass
 class DownloadData:
-    """Bulk download data result."""
+    """Bulk download data result.
+
+    Deprecated: see :class:`DownloadDataRequest`. The ``{data, totalCount}`` shape does not
+    match what the server is planned to return.
+    """
 
     data: list[dict[str, Any]] = field(default_factory=list)
     total_count: int = 0
@@ -54,7 +74,13 @@ class DownloadData:
 
 @dataclass
 class OHLCRequest:
-    """OHLC data request."""
+    """OHLC data request.
+
+    Attributes:
+        symbol: Ticker symbol.
+        from_date: Start of the range/window.
+        to_date: End of the range/window.
+    """
 
     symbol: str
     from_date: str
@@ -81,7 +107,19 @@ class OHLCRequest:
 
 @dataclass
 class OHLCData:
-    """OHLC data result."""
+    """OHLC data result.
+
+    Attributes:
+        symbol: Ticker symbol.
+        trading_date: Trading date as the server formats it (varies by endpoint; see
+            ``parse_date``).
+        open_price: Opening price.
+        high_price: Highest price.
+        low_price: Lowest price.
+        close_price: Closing/last price.
+        volume: Traded volume.
+        value: Traded value.
+    """
 
     symbol: str
     trading_date: str
@@ -137,11 +175,19 @@ class MarketIndexesRequest:
 
 @dataclass
 class MarketIndexes:
-    """Market indices information."""
+    """Market indices information.
+
+    Attributes:
+        index: Index code, e.g. ``"VN30"``.
+        index_name: Index name (the server repeats the code).
+        board: Exchange board: a ``Board``, or the raw string for an unknown board.
+        board_raw: The board exactly as the server sent it.
+    """
 
     index: str
     index_name: str
-    board: Board | None = None
+    board: Board | str | None = None
+    board_raw: str | None = None
 
     @classmethod
     def from_list(cls, data: list[dict]) -> list[MarketIndexes]:
@@ -150,13 +196,15 @@ class MarketIndexes:
         Args:
             data: List of dicts with ``index``, ``indexName``, and optional ``board`` keys.
         Returns:
-            List of MarketIndexes instances, one per input dictionary.
+            List of MarketIndexes instances, one per input dictionary. ``board`` is the
+            matching ``Board``, or the raw string for a board this SDK does not know.
         """
         return [
             cls(
                 index=item.get("index", ""),
                 index_name=item.get("indexName", ""),
-                board=Board(item.get("board", "").upper()) if item.get("board") else None,
+                board=_to_board(item.get("board")),
+                board_raw=_blank_to_none(item.get("board")),
             )
             for item in data
         ]
@@ -164,7 +212,14 @@ class MarketIndexes:
 
 @dataclass
 class MarketIndexSummaryRequest:
-    """Market index summary request."""
+    """Market index summary request.
+
+    Attributes:
+        index: Index code, e.g. ``"VN30"``.
+        board: Exchange board: a ``Board``, or the raw string for an unknown board.
+        trading_date: Trading date as the server formats it (varies by endpoint; see
+            ``parse_date``).
+    """
 
     index: str | None = None
     board: Board | None = None
@@ -188,7 +243,14 @@ class MarketIndexSummaryRequest:
 
 @dataclass
 class MarketIndexSummary:
-    """Market index summary information."""
+    """Market index summary information.
+
+    Attributes:
+        trading_date: Trading date as the server formats it (varies by endpoint; see
+            ``parse_date``).
+        total_buy_foreign: Foreign buy volume.
+        total_sell_foreign: Foreign sell volume.
+    """
 
     trading_date: str
     total_trade: int
@@ -209,6 +271,12 @@ class MarketIndexSummary:
     total_prop_buy_value: float
     total_prop_sell: int
     total_prop_sell_value: float
+    total_buy_foreign: float | None = None
+    total_buy_foreign_value: float | None = None
+    total_sell_foreign: float | None = None
+    total_sell_foreign_value: float | None = None
+    net_purchases_foreign_volume: float | None = None
+    net_purchases_foreign_value: float | None = None
 
     @classmethod
     def from_list(cls, data: list[dict]) -> list[MarketIndexSummary]:
@@ -240,6 +308,14 @@ class MarketIndexSummary:
                 total_prop_buy_value=to_float(item.get("totalPropBuyValue", 0.0)),
                 total_prop_sell=to_int(item.get("totalPropSell", 0)),
                 total_prop_sell_value=to_float(item.get("totalPropSellValue", 0.0)),
+                total_buy_foreign=to_opt_float(item.get("totalBuyForeign")),
+                total_buy_foreign_value=to_opt_float(item.get("totalBuyForeignValue")),
+                total_sell_foreign=to_opt_float(item.get("totalSellForeign")),
+                total_sell_foreign_value=to_opt_float(item.get("totalSellForeignValue")),
+                net_purchases_foreign_volume=to_opt_float(
+                    item.get("netPurchasesForeignVolume")
+                ),
+                net_purchases_foreign_value=to_opt_float(item.get("netPurchasesForeignValue")),
             )
             for item in data
         ]
@@ -247,7 +323,13 @@ class MarketIndexSummary:
 
 @dataclass
 class SecuritiesInfoRequest:
-    """Securities information request."""
+    """Securities information request.
+
+    Attributes:
+        symbol: Ticker symbol.
+        board: Exchange board: a ``Board``, or the raw string for an unknown board.
+        index: Index code, e.g. ``"VN30"``.
+    """
 
     symbol: str | None = None
     board: Board | None = None
@@ -271,10 +353,19 @@ class SecuritiesInfoRequest:
 
 @dataclass
 class SecuritiesInfo:
-    """Securities information."""
+    """Securities information.
+
+    Attributes:
+        symbol: Ticker symbol.
+        board: Exchange board: a ``Board``, or the raw string for an unknown board.
+        index: Index code, e.g. ``"VN30"``.
+        lot_size: Trading lot size.
+        listed_shares: Number of listed shares.
+        stock_type: Security type code.
+    """
 
     symbol: str
-    board: Board | None = None
+    board: Board | str | None = None
     index: str | None = None
     symbol_name_vi: str | None = None
     symbol_name_en: str | None = None
@@ -292,6 +383,7 @@ class SecuritiesInfo:
     i_nav: float | None = None
     open_interest: float | None = None
     settlement_price: float | None = None
+    stock_type: str | None = None
 
     @classmethod
     def from_list(cls, data: list[dict]) -> list[SecuritiesInfo]:
@@ -300,29 +392,31 @@ class SecuritiesInfo:
         Args:
             data: List of dicts with camelCase securities fields (symbol, names, CW info, etc.).
         Returns:
-            List of SecuritiesInfo instances, one per input dictionary.
+            List of SecuritiesInfo instances, one per input dictionary. A numeric field the
+            server omits or leaves empty is ``None`` (not 0), and an empty date is ``None``.
         """
         return [
             cls(
                 symbol=item.get("symbol", ""),
-                board=Board(item.get("board", "").upper()) if item.get("board") else None,
+                board=_to_board(item.get("board")),
                 index=item.get("index"),
                 symbol_name_vi=item.get("symbolNameVi"),
                 symbol_name_en=item.get("symbolNameEn"),
-                lot_size=to_int(item.get("lotSize", 0)),
-                maturity_date=item.get("maturityDate"),
-                first_trading_date=item.get("firstTradingDate"),
-                last_trading_date=item.get("lastTradingDate"),
-                cw_underlying_symbol=item.get("cwUnderlyingSymbol"),
-                cw_exercise_price=to_float(item.get("cwExercisePrice", 0.0)),
-                cw_execution_ratio=to_float(item.get("cwExecutionRatio", 0.0)),
-                listed_shares=to_int(item.get("listedShare", 0)),
-                icb_code=item.get("icbCode"),
-                icb_name=item.get("icbName"),
-                i_index=to_float(item.get("iIndex", 0.0)),
-                i_nav=to_float(item.get("iNav", 0.0)),
-                open_interest=to_float(item.get("openInterest", 0.0)),
-                settlement_price=to_float(item.get("settlementPrice", 0.0)),
+                lot_size=to_opt_int(item.get("lotSize")),
+                maturity_date=_blank_to_none(item.get("maturityDate")),
+                first_trading_date=_blank_to_none(item.get("firstTradingDate")),
+                last_trading_date=_blank_to_none(item.get("lastTradingDate")),
+                cw_underlying_symbol=_blank_to_none(item.get("cwUnderlyingSymbol")),
+                cw_exercise_price=to_opt_float(item.get("cwExercisePrice")),
+                cw_execution_ratio=to_opt_float(item.get("cwExecutionRatio")),
+                listed_shares=to_opt_int(item.get("listedShare")),
+                icb_code=_blank_to_none(item.get("icbCode")),
+                icb_name=_blank_to_none(item.get("icbName")),
+                i_index=to_opt_float(item.get("iIndex")),
+                i_nav=to_opt_float(item.get("iNav")),
+                open_interest=to_opt_float(item.get("openInterest")),
+                settlement_price=to_opt_float(item.get("settlementPrice")),
+                stock_type=_blank_to_none(item.get("stockType")),
             )
             for item in data
         ]
@@ -330,10 +424,15 @@ class SecuritiesInfo:
 
 @dataclass
 class MasterDataRequest:
-    """Master data (reference price) request."""
+    """Master data (reference price) request.
 
-    from_date: str
-    to_date: str
+    Attributes:
+        from_date: Start of the range/window.
+        to_date: End of the range/window.
+    """
+
+    from_date: str | None = None
+    to_date: str | None = None
     page: int = DEFAULT_PAGE
     size: int = DEFAULT_SIZE
 
@@ -341,21 +440,34 @@ class MasterDataRequest:
         """Convert the request to an API payload with the endpoint's query keys.
 
         Returns:
-            Dictionary with ``From``/``To`` date range and pagination keys.
+            Dictionary with pagination keys, plus the lower-case ``from``/``to`` date range
+            only for the bounds that were set.
         """
-        return {
-            "From": self.from_date,
-            "To": self.to_date,
-            "pageIndex": self.page,
-            "pageSize": self.size,
-        }
+        data: dict[str, Any] = {}
+        if self.from_date is not None:
+            data["from"] = self.from_date
+        if self.to_date is not None:
+            data["to"] = self.to_date
+        data["pageIndex"] = self.page
+        data["pageSize"] = self.size
+        return data
 
 
 @dataclass
 class MasterData:
-    """Reference price (ceiling/floor/reference) for a symbol on a trading date."""
+    """Reference price (ceiling/floor/reference) for a symbol on a trading date.
 
-    board: Board | None
+    Attributes:
+        board: Exchange board: a ``Board``, or the raw string for an unknown board.
+        symbol: Ticker symbol.
+        trading_date: Trading date as the server formats it (varies by endpoint; see
+            ``parse_date``).
+        ceiling: Ceiling price of the day.
+        floor: Floor price of the day.
+        ref_price: Reference price of the day.
+    """
+
+    board: Board | str | None
     symbol: str
     trading_date: str
     ceiling: float
@@ -373,7 +485,7 @@ class MasterData:
         """
         return [
             cls(
-                board=Board.from_value(item.get("board")),
+                board=_to_board(item.get("board")),
                 symbol=item.get("symbol", ""),
                 trading_date=item.get("tradingDate", ""),
                 ceiling=to_number(item.get("ceiling", 0.0)),
@@ -386,7 +498,14 @@ class MasterData:
 
 @dataclass
 class SecuritiesSummaryRequest:
-    """Securities summary request."""
+    """Securities summary request.
+
+    Attributes:
+        from_date: Start of the range/window.
+        to_date: End of the range/window.
+        symbol: Ticker symbol.
+        index: Index code, e.g. ``"VN30"``.
+    """
 
     from_date: str
     to_date: str
@@ -416,7 +535,20 @@ class SecuritiesSummaryRequest:
 
 @dataclass
 class SecuritiesSummary:
-    """Securities summary information."""
+    """Securities summary information.
+
+    Attributes:
+        symbol: Ticker symbol.
+        trading_date: Trading date as the server formats it (varies by endpoint; see
+            ``parse_date``).
+        open_price: Opening price.
+        high_price: Highest price.
+        low_price: Lowest price.
+        close_price: Closing/last price.
+        ceiling: Not sent by ``securitiesSummary`` (stays 0); use ``get_master_data()``.
+        floor: Not sent by ``securitiesSummary`` (stays 0); use ``get_master_data()``.
+        ref_price: Not sent by ``securitiesSummary`` (stays 0); use ``get_master_data()``.
+    """
 
     symbol: str
     trading_date: str
@@ -443,6 +575,9 @@ class SecuritiesSummary:
     total_deal_value: float = 0.0
     open_interest: float = 0.0
     settlement_price: float = 0.0
+    ceiling: float | None = None
+    floor: float | None = None
+    ref_price: float | None = None
 
     @classmethod
     def from_list(cls, data: list[dict]) -> list[SecuritiesSummary]:
@@ -480,6 +615,9 @@ class SecuritiesSummary:
                 total_deal_value=to_number(item.get("totalDealValue", 0.0)),
                 open_interest=to_number(item.get("openInterest", 0.0)),
                 settlement_price=to_number(item.get("settlementPrice", 0.0)),
+                ceiling=to_opt_float(item.get("ceiling")),
+                floor=to_opt_float(item.get("floor")),
+                ref_price=to_opt_float(item.get("refPrice")),
             )
             for item in data
         ]

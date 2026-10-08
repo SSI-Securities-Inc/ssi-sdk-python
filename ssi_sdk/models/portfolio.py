@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 from ssi_sdk.constant import DEFAULT_PAGE, DEFAULT_SIZE
 from ssi_sdk.enums import OrderSide, OrderStatus, OrderType
-from ssi_sdk.utils import to_float, to_int, to_number, to_price
+from ssi_sdk.utils import (
+    is_no_content,
+    pick,
+    to_enum,
+    to_float,
+    to_int,
+    to_number,
+    to_opt_int,
+    to_price,
+)
+
+
+def _deprecated_alias(old: str, new: str) -> property:
+    """Read-only property exposing a renamed field under its old name."""
+
+    def getter(self):
+        warnings.warn(f"{old} is deprecated; use {new}", DeprecationWarning, stacklevel=2)
+        return getattr(self, new)
+
+    return property(getter)
 
 
 @dataclass
@@ -78,8 +98,8 @@ class EquityAccountBalance:
             buy_t0=to_float(data.get("buyT0")),
             buy_t1=to_float(data.get("buyT1")),
             buy_t2=to_float(data.get("buyT2")),
-            advance_cash_t0=to_float(data.get("advanceCashT0")),
-            advance_cash_t1=to_float(data.get("advanceCashT1")),
+            advance_cash_t0=to_float(pick(data, "advancedCashT0", "advanceCashT0")),
+            advance_cash_t1=to_float(pick(data, "advancedCashT1", "advanceCashT1")),
             hold_subscription=to_float(data.get("holdSubscription")),
             dividend=to_float(data.get("dividend")),
         )
@@ -87,7 +107,15 @@ class EquityAccountBalance:
 
 @dataclass
 class DerivativeAccountBalance:
-    """Derivative account balance information."""
+    """Derivative account balance information.
+
+    Attributes:
+        account_no: Trading account number.
+        floating_pl: Floating profit/loss.
+        trading_pl: Realised trading profit/loss.
+        withdrawable_ssi: Withdrawable amount (SSI).
+        withdrawable_vsdc: Withdrawable amount (VSDC).
+    """
 
     account_no: str = ""
     account_balance: float = 0.0
@@ -103,10 +131,13 @@ class DerivativeAccountBalance:
     withdrawable: float = 0.0
     cash_ssi: float = 0.0
     valid_non_cash_ssi: float = 0.0
-    cash_withdrawable_ssi: float = 0.0
+    withdrawable_ssi: float = 0.0
     cash_vsdc: float = 0.0
     valid_non_cash_vsdc: float = 0.0
-    cash_withdrawable_vsdc: float = 0.0
+    withdrawable_vsdc: float = 0.0
+
+    cash_withdrawable_ssi = _deprecated_alias("cash_withdrawable_ssi", "withdrawable_ssi")
+    cash_withdrawable_vsdc = _deprecated_alias("cash_withdrawable_vsdc", "withdrawable_vsdc")
 
     @classmethod
     def from_dict(cls, data: dict) -> DerivativeAccountBalance:
@@ -133,16 +164,21 @@ class DerivativeAccountBalance:
             withdrawable=to_float(data.get("withdrawable")),
             cash_ssi=to_float(data.get("cashSSI")),
             valid_non_cash_ssi=to_float(data.get("validNonCashSSI")),
-            cash_withdrawable_ssi=to_float(data.get("cashWithdrawableSSI")),
+            withdrawable_ssi=to_float(pick(data, "withdrawableSSI", "cashWithdrawableSSI")),
             cash_vsdc=to_float(data.get("cashVSDC")),
             valid_non_cash_vsdc=to_float(data.get("validNonCashVSDC")),
-            cash_withdrawable_vsdc=to_float(data.get("cashWithdrawableVSDC")),
+            withdrawable_vsdc=to_float(pick(data, "withdrawableVSDC", "cashWithdrawableVSDC")),
         )
 
 
 @dataclass
 class AccountBalance:
-    """Account balance information."""
+    """Account balance information.
+
+    Attributes:
+        equity: Equity section (``None`` if the account has none).
+        derivative: Derivative section (``None`` if the account has none).
+    """
 
     equity: EquityAccountBalance | None = None
     derivative: DerivativeAccountBalance | None = None
@@ -173,14 +209,19 @@ class PositionsRequest:
 
     client_id: str
     account_no: str | None = None
+    query_summary: bool = True
 
     def to_dict(self) -> dict:
         """Convert the request to an API query-parameter dictionary.
 
         Returns:
-            Dictionary with ``clientId`` and optionally ``accountNo`` when set.
+            Dictionary with ``clientId``, ``querySummary`` (always sent explicitly, as
+            ``"true"``/``"false"``) and optionally ``accountNo`` when set.
         """
-        params = {"clientId": self.client_id}
+        params = {
+            "clientId": self.client_id,
+            "querySummary": "true" if self.query_summary else "false",
+        }
         if self.account_no is not None:
             params["accountNo"] = self.account_no
         return params
@@ -188,7 +229,13 @@ class PositionsRequest:
 
 @dataclass
 class EquityPosition:
-    """Equity position information."""
+    """Equity position information.
+
+    Attributes:
+        account_no: Trading account number.
+        symbol: Ticker symbol.
+        quantity: Order quantity (shares/contracts).
+    """
 
     account_no: str = ""
     symbol: str = ""
@@ -240,7 +287,15 @@ class EquityPosition:
 
 @dataclass
 class DerivativePosition:
-    """Derivative position information."""
+    """Derivative position information.
+
+    Attributes:
+        account_no: Trading account number.
+        symbol: Ticker symbol.
+        net: Net position (may be negative).
+        floating_pl: Floating profit/loss.
+        trading_pl: Realised trading profit/loss.
+    """
 
     account_no: str = ""
     symbol: str = ""
@@ -254,18 +309,19 @@ class DerivativePosition:
     trading_pl: float = 0.0
 
     @classmethod
-    def from_list(cls, data: list) -> list[DerivativePosition]:
+    def from_list(cls, data: list, account_no: str = "") -> list[DerivativePosition]:
         """Create DerivativePosition instances from a list of API response items.
 
         Args:
             data: List of derivative position dicts with camelCase keys (e.g. ``symbol``,
                 ``long``, ``short``); missing keys default to empty or ``0``.
+            account_no: Account to attach when an item carries no ``accountNo`` of its own.
         Returns:
             List of DerivativePosition instances, one per input item.
         """
         return [
             cls(
-                account_no=item.get("accountNo", ""),
+                account_no=item.get("accountNo") or account_no,
                 symbol=item.get("symbol", ""),
                 long=to_int(item.get("long", 0)),
                 short=to_int(item.get("short", 0)),
@@ -282,48 +338,82 @@ class DerivativePosition:
 
 @dataclass
 class AllDerivativePosition:
-    """Derivatives position information."""
+    """Derivatives position information.
+
+    Attributes:
+        open_positions: Open derivative positions.
+        closed_positions: Closed derivative positions.
+        account_no: Trading account number.
+    """
 
     open_positions: list[DerivativePosition] = field(default_factory=list)
     closed_positions: list[DerivativePosition] = field(default_factory=list)
+    account_no: str = ""
 
     @classmethod
-    def from_dict(cls, data: dict) -> AllDerivativePosition:
-        """Create an AllDerivativePosition from an API response dictionary.
+    def from_dict(cls, data: dict | list, account_no: str = "") -> AllDerivativePosition:
+        """Create an AllDerivativePosition from an API response payload.
+
+        The server answers with one object ``{"derOpenPositions": [...],
+        "derClosePositions": [...]}``; a bare list is read as the open positions.
 
         Args:
-            data: Payload with ``derOpenPositions`` and ``derClosePositions`` lists;
-                absent keys yield empty position lists.
+            data: The derivative payload (object, or a list of position dicts).
+            account_no: Account attached to positions that carry no ``accountNo``.
         Returns:
-            AllDerivativePosition holding the open and closed position lists.
+            AllDerivativePosition holding the open and closed position lists; absent keys
+            yield empty lists.
         """
+        if isinstance(data, list):
+            return cls(
+                open_positions=DerivativePosition.from_list(data, account_no),
+                account_no=account_no,
+            )
+        if not isinstance(data, dict):
+            return cls(account_no=account_no)
         return cls(
-            open_positions=DerivativePosition.from_list(data.get("derOpenPositions", [])),
-            closed_positions=DerivativePosition.from_list(data.get("derClosePositions", [])),
+            open_positions=DerivativePosition.from_list(
+                data.get("derOpenPositions") or [], account_no
+            ),
+            closed_positions=DerivativePosition.from_list(
+                data.get("derClosePositions") or [], account_no
+            ),
+            account_no=account_no,
         )
 
 
 @dataclass
 class Position:
-    """Position information."""
+    """Position information.
+
+    Attributes:
+        equity: Equity section (``None`` if the account has none).
+        derivative: Derivative section (``None`` if the account has none).
+    """
 
     equity: list[EquityPosition] | None = None
     derivative: AllDerivativePosition | None = None
 
     @classmethod
-    def from_dict(cls, data: dict) -> Position:
+    def from_dict(cls, data: dict, account_no: str = "") -> Position:
         """Create a Position from an API response dictionary.
 
         Args:
-            data: Payload with optional ``equity`` list and ``derivative`` sub-object;
-                absent or empty sections yield ``None`` for that side.
+            data: Payload with optional ``equity`` list and ``derivative`` section (object
+                or list); absent or empty sections yield ``None`` for that side. The
+                server's ``{"code": 204}`` marker yields an empty Position.
+            account_no: Account attached to derivative positions that carry none.
         Returns:
             Position wrapping the parsed equity and derivative positions.
         """
+        if is_no_content(data) or not isinstance(data, dict):
+            return cls()
+        equity = data.get("equity")
+        derivative = data.get("derivative")
         return cls(
-            equity=EquityPosition.from_list(data.get("equity", [])) if data.get("equity") else None,
-            derivative=AllDerivativePosition.from_dict(data.get("derivative", {}))
-            if data.get("derivative")
+            equity=EquityPosition.from_list(equity) if equity else None,
+            derivative=AllDerivativePosition.from_dict(derivative, account_no)
+            if derivative
             else None,
         )
 
@@ -345,7 +435,14 @@ class PPMMRRequest:
 
 @dataclass
 class EquityPPMMR:
-    """Equity PPMMR information."""
+    """Equity PPMMR information.
+
+    Attributes:
+        account_no: Trading account number.
+        equity: Equity section (``None`` if the account has none).
+        margin_ratio: Margin ratio as the server's string; ``None`` on derivative accounts.
+        purchasing_power: Purchasing power; ``None`` on derivative accounts.
+    """
 
     account_no: str = ""
     dividend: float = 0.0
@@ -460,11 +557,11 @@ class EquityPPMMR:
             bank_balance=to_float(data.get("bankBalance")),
             on_hold_cash=to_float(data.get("onHoldCash")),
             doverdue=to_float(data.get("doverdue")),
-            doverdue_ssi=to_float(data.get("doverdueSSI")),
+            doverdue_ssi=to_float(pick(data, "doverdue_ssi", "doverdueSSI")),
             account_balance=to_float(data.get("accountBalance")),
-            d=to_float(data.get("D")),
-            d_spv=to_float(data.get("dSPV")),
-            d_ssi=to_float(data.get("dSSI")),
+            d=to_float(pick(data, "D", "d")),
+            d_spv=to_float(pick(data, "dSPV", "dspv")),
+            d_ssi=to_float(pick(data, "dSSI", "dssi")),
             cia=to_float(data.get("cia")),
             collateral_asset=to_float(data.get("collateralAsset")),
             collateral_asset_ssi=to_float(data.get("collateralAssetSSI")),
@@ -474,10 +571,10 @@ class EquityPPMMR:
             lmv=to_float(data.get("lmv")),
             lmv_margin=to_float(data.get("lmvMargin")),
             lmv_margin_ssi=to_float(data.get("lmvMarginSSI")),
-            call_lmv=to_float(data.get("callLmv")),
-            force_lmv=to_float(data.get("forceLmv")),
-            call_lmv_ssi=to_float(data.get("callLmvSSI")),
-            force_lmv_ssi=to_float(data.get("forceLmvSSI")),
+            call_lmv=to_float(pick(data, "callLMV", "callLmv")),
+            force_lmv=to_float(pick(data, "forceLMV", "forceLmv")),
+            call_lmv_ssi=to_float(pick(data, "callLMVSSI", "callLmvSSI")),
+            force_lmv_ssi=to_float(pick(data, "forceLMVSSI", "forceLmvSSI")),
             lmv_non_marginable=to_float(data.get("lmvNonMarginable")),
             lmv_non_marginable_ssi=to_float(data.get("lmvNonMarginableSSI")),
             pre_loan=to_float(data.get("preLoan")),
@@ -494,8 +591,12 @@ class EquityPPMMR:
             sell_t1=to_float(data.get("sellT1")),
             sell_t2=to_float(data.get("sellT2")),
             credit_limit=to_float(data.get("creditLimit")),
-            margin_call_lmv_sold=to_float(data.get("marginCallLmvSold")),
-            margin_call_lmv_sold_ssi=to_float(data.get("marginCallLmvSoldSSI")),
+            margin_call_lmv_sold=to_float(
+                pick(data, "marginCallLMVSold", "marginCallLmvSold")
+            ),
+            margin_call_lmv_sold_ssi=to_float(
+                pick(data, "marginCallLMVSoldSSI", "marginCallLmvSoldSSI")
+            ),
             margin_call=to_float(data.get("marginCall")),
             margin_call_ssi=to_float(data.get("marginCallSSI")),
             collateral_a=to_float(data.get("collateralA")),
@@ -503,16 +604,24 @@ class EquityPPMMR:
             collateral_a_ssi=to_float(data.get("collateralASSI")),
             collateral_non_ssi=to_float(data.get("collateralNonSSI")),
             call_margin=to_float(data.get("callMargin")),
-            call_force_sell=to_float(data.get("callForceSell")),
+            call_force_sell=to_float(pick(data, "callForcesell", "callForceSell")),
             call_margin_ssi=to_float(data.get("callMarginSSI")),
-            call_force_sell_ssi=to_float(data.get("callForceSellSSI")),
+            call_force_sell_ssi=to_float(pick(data, "callForcesellSSI", "callForceSellSSI")),
             ar=to_float(data.get("ar")),
         )
 
 
 @dataclass
 class DerivativePPMMR:
-    """Derivative PPMMR information."""
+    """Derivative PPMMR information.
+
+    Attributes:
+        account_no: Trading account number.
+        floating_pl: Floating profit/loss.
+        trading_pl: Realised trading profit/loss.
+        withdrawable_ssi: Withdrawable amount (SSI).
+        withdrawable_vsdc: Withdrawable amount (VSDC).
+    """
 
     account_no: str = ""
     account_balance: float = 0.0
@@ -583,7 +692,9 @@ class DerivativePPMMR:
             depositable=to_number(data.get("depositable")),
             rc_call=to_number(data.get("rcCall")),
             withdrawable=to_number(data.get("withdrawable")),
-            non_cash_drawable_rc_call=to_number(data.get("nonCashDrawableRcCall")),
+            non_cash_drawable_rc_call=to_number(
+                pick(data, "nonCashDrawableRCCall", "nonCashDrawableRcCall")
+            ),
             cash_ssi=to_number(data.get("cashSSI")),
             valid_non_cash_ssi=to_number(data.get("validNonCashSSI")),
             total_asset_ssi=to_number(data.get("totalAssetSSI")),
@@ -617,7 +728,12 @@ class DerivativePPMMR:
 
 @dataclass
 class PPMMR:
-    """PPMMR information."""
+    """PPMMR information.
+
+    Attributes:
+        equity: Equity section (``None`` if the account has none).
+        derivative: Derivative section (``None`` if the account has none).
+    """
 
     equity: EquityPPMMR | None = None
     derivative: DerivativePPMMR | None = None
@@ -642,46 +758,84 @@ class PPMMR:
 
 @dataclass
 class OrderBookRequest:
-    """Order book request."""
+    """Order book request.
+
+    Attributes:
+        account_no: Trading account number.
+        from_date: Start of the range/window.
+        to_date: End of the range/window.
+        symbol: Ticker symbol.
+    """
 
     account_no: str
     from_date: str | None = None
     to_date: str | None = None
     page: int = DEFAULT_PAGE
     size: int = DEFAULT_SIZE
+    symbol: str | None = None
+    order_status: OrderStatus | str | None = None
 
     def to_dict(self) -> dict:
         """Convert the request to an API query-parameter dictionary.
 
         Returns:
-            Dictionary with ``accountNo``, ``from``, ``to``, ``pageIndex`` and ``pageSize`` keys.
+            Dictionary with ``accountNo``, ``pageIndex`` and ``pageSize``, plus ``from``,
+            ``to``, ``symbol`` and ``orderStatus`` for those that are set.
         """
-        return {
-            "accountNo": self.account_no,
-            "from": self.from_date,
-            "to": self.to_date,
-            "pageIndex": self.page,
-            "pageSize": self.size,
-        }
+        params: dict = {"accountNo": self.account_no}
+        if self.from_date is not None:
+            params["from"] = self.from_date
+        if self.to_date is not None:
+            params["to"] = self.to_date
+        if self.symbol is not None:
+            params["symbol"] = self.symbol
+        if self.order_status is not None:
+            params["orderStatus"] = getattr(self.order_status, "value", self.order_status)
+        params["pageIndex"] = self.page
+        params["pageSize"] = self.size
+        return params
 
 
 @dataclass
 class Order:
-    """Order information."""
+    """Order information.
+
+    Attributes:
+        account_no: Trading account number.
+        client_request_id: Idempotency key chosen by the caller (<= 20 characters).
+        order_id: Server-assigned order id.
+        symbol: Ticker symbol (the order history sends it as ``instrumentId``).
+        side: Order side: an ``OrderSide``, or the raw string for an unknown value (the order
+            history sends it as ``buySell``).
+        order_type: Order type: an ``OrderType`` member, or the raw string for an unknown
+            type.
+        price: Price in VND (a word such as ``"ATO"`` for market-priced orders).
+        avg_price: Average matched price.
+        quantity: Order quantity (shares/contracts).
+        os_quantity: Outstanding quantity. The REST order book never sends it, so it is
+            ``None`` there.
+        filled_quantity: Matched quantity.
+        cancel_quantity: Cancelled quantity.
+        status: Status: an enum member, or the raw string for a value this SDK does not
+            know.
+        input_time: When the order was entered, ``"yyyy/MM/dd HH:mm:ss"``.
+        modify_time: When the order was last modified, ``"yyyy/MM/dd HH:mm:ss"``.
+        message: Server message (for a rejection, the reason).
+    """
 
     account_no: str = ""
     client_request_id: str = ""
     order_id: str = ""
     symbol: str = ""
-    side: OrderSide | None = None
-    order_type: OrderType | None = None
-    price: int | float | OrderSide = 0
+    side: OrderSide | str | None = None
+    order_type: OrderType | str | None = None
+    price: int | float | OrderType | str = 0
     avg_price: int | float = 0
     quantity: int = 0
-    os_quantity: int = 0
+    os_quantity: int | None = None
     filled_quantity: int = 0
     cancel_quantity: int = 0
-    status: OrderStatus | None = None
+    status: OrderStatus | str | None = None
     input_time: str = ""
     modify_time: str = ""
     message: str = ""
@@ -693,24 +847,28 @@ class Order:
         Args:
             data: Order payload with camelCase keys (e.g. ``orderId``, ``side``,
                 ``orderStatus``); missing keys default to empty or ``0``.
+                ``filledQty``/``cancelQty`` are the server's names (``filledQuantity``/
+                ``cancelQuantity`` are read as a fallback). ``osQuantity`` is not sent by
+                the server, so ``os_quantity`` is normally ``None``.
             account_no: Trading account number to attach to the order.
         Returns:
-            Populated Order instance with enum side, type and status fields parsed.
+            Populated Order instance. Side, type and status are enum members, or the raw
+            string for a value this SDK does not know; ATO/ATC/MP prices stay words.
         """
         return cls(
             account_no=account_no,
             client_request_id=data.get("clientRequestId", ""),
             order_id=data.get("orderId", ""),
-            symbol=data.get("symbol", ""),
-            side=OrderSide(data.get("side")) if data.get("side") else None,
-            order_type=OrderType(data.get("orderType")) if data.get("orderType") else None,
+            symbol=pick(data, "symbol", "instrumentId", default=""),
+            side=to_enum(OrderSide, pick(data, "side", "buySell")),
+            order_type=to_enum(OrderType, data.get("orderType")),
             price=to_price(data.get("price")),
             avg_price=to_number(data.get("avgPrice")),
             quantity=to_int(data.get("quantity", 0)),
-            os_quantity=to_int(data.get("osQuantity", 0)),
-            filled_quantity=to_int(data.get("filledQuantity", 0)),
-            cancel_quantity=to_int(data.get("cancelQuantity", 0)),
-            status=OrderStatus(data.get("orderStatus")) if data.get("orderStatus") else None,
+            os_quantity=to_opt_int(data.get("osQuantity")),
+            filled_quantity=to_int(pick(data, "filledQty", "filledQuantity")),
+            cancel_quantity=to_int(pick(data, "cancelQty", "cancelQuantity")),
+            status=to_enum(OrderStatus, data.get("orderStatus")),
             input_time=data.get("inputTime", ""),
             modify_time=data.get("modifiedTime", ""),
             message=data.get("message", ""),
@@ -719,7 +877,13 @@ class Order:
 
 @dataclass
 class OrderBook:
-    """Order book information."""
+    """Order book information.
+
+    Attributes:
+        orders: The orders.
+        total_orders: ``totalRecord`` of the response; informational, do not derive a page
+            count from it.
+    """
 
     orders: list[Order] = field(default_factory=list)
     total_orders: int = 0
@@ -730,14 +894,19 @@ class OrderBook:
 
         Args:
             data: Payload with an ``orderList`` array, an ``accountNo`` applied to each
-                order, and a ``totalRecord`` count; absent keys yield an empty book.
+                order, and a ``totalRecord`` count; absent keys yield an empty book, and so
+                does the server's ``{"code": 204}`` marker.
         Returns:
-            OrderBook holding the parsed orders and total record count.
+            OrderBook holding the parsed orders and total record count. ``total_orders`` is
+            informational: do not derive a page count from it (the server's paging can be
+            off), page until a page comes back empty instead.
         """
+        if is_no_content(data) or not isinstance(data, dict):
+            return cls()
         return cls(
             orders=[
                 Order.from_dict(order, account_no=data.get("accountNo", ""))
-                for order in data.get("orderList", [])
+                for order in data.get("orderList") or []
             ],
             total_orders=to_int(data.get("totalRecord", 0)),
         )
