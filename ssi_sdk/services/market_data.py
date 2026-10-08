@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import AsyncIterator, Iterator
+from datetime import datetime
 
 from ssi_sdk.constant import (
     DEFAULT_PAGE,
@@ -14,7 +17,8 @@ from ssi_sdk.constant import (
     EP_DATA_SECURITIES_BY_BOARD,
     EP_DATA_SECURITIES_SUMMARY,
 )
-from ssi_sdk.enums import Board, Timeframe
+from ssi_sdk.enums import ALLOWED_TIMEFRAMES, Board, Timeframe
+from ssi_sdk.exceptions import APIError, ValidationError
 from ssi_sdk.models import (
     MarketIndexes,
     MarketIndexesRequest,
@@ -33,7 +37,14 @@ from ssi_sdk.transport.rest_client import AsyncRestClient, RestClient
 from ssi_sdk.utils import (
     from_beginning_of_day,
     from_end_of_day,
+    is_no_content,
+    parse_date_arg,
+    pick,
+    require_date_range,
+    require_exactly_one,
     require_non_empty,
+    require_positive,
+    require_symbol,
     to_int,
     today_date_str,
 )
@@ -42,6 +53,98 @@ logger = logging.getLogger("ssi_sdk.services.market_data")
 
 
 # ── shared logic (no async) ─────────────────────────────────
+
+# Boards the REST data endpoints serve; DERIVATIVES exists only on the stream/master data.
+_REST_BOARDS = (Board.HOSE, Board.HNX, Board.UPCOM)
+
+_WEEK_MONTH_REJECTED = (
+    "The server does not support the {name} timeframe (error 400210); "
+    "request 1d bars and aggregate them client-side instead"
+)
+
+
+def _rows(data, what: str) -> list:
+    """Return the rows of a bare-array endpoint.
+
+    The server answers an empty result with HTTP 200 and ``{"code": 204}`` (an object,
+    not ``[]``), so that marker maps to an empty list rather than a parse error.
+    """
+    if isinstance(data, list):
+        return data
+    if is_no_content(data):
+        return []
+    raise APIError(f"Unexpected response format while reading {what}", response_body=data)
+
+
+def _data_rows(data, what: str) -> list:
+    """Return the ``data`` rows of an enveloped endpoint (``{"data": [...], ...}``)."""
+    if is_no_content(data):
+        return []
+    if isinstance(data, dict):
+        rows = data.get("data")
+        if rows is None:
+            return []
+        if isinstance(rows, list):
+            return rows
+    raise APIError(f"Unexpected response format while reading {what}", response_body=data)
+
+
+def _pages_count(data) -> int:
+    """Total pages of a paginated response (``pagesCount``, falling back to ``pageCount``)."""
+    return to_int(pick(data, "pagesCount", "pageCount"), 1) if isinstance(data, dict) else 1
+
+
+def _rest_board(board: Board | str | None) -> Board | None:
+    """Validate a board for a REST data endpoint (HOSE/HNX/UPCOM only)."""
+    if board is None:
+        return None
+    resolved = Board.from_value(board)
+    if resolved not in _REST_BOARDS:
+        allowed = ", ".join(b.value for b in _REST_BOARDS)
+        raise ValidationError(f"board must be one of {allowed}, got '{board}'")
+    return resolved
+
+
+def _check_timeframe(timeframe: Timeframe) -> Timeframe:
+    """Reject timeframes the OHLC endpoint does not accept."""
+    if timeframe not in ALLOWED_TIMEFRAMES:
+        allowed = ", ".join(sorted(t.value for t in ALLOWED_TIMEFRAMES))
+        raise ValidationError(f"timeframe {timeframe.value} is not supported; use one of {allowed}")
+    return timeframe
+
+
+def _check_paging(page: int, size: int) -> None:
+    """The server validates neither ``pageIndex`` nor ``pageSize``; 0 or negative values give
+    undefined results, so refuse them here."""
+    require_positive(page, "page")
+    require_positive(size, "size")
+
+
+def _clamp_future_end(timeframe: Timeframe, from_date: str, to_date: str) -> str:
+    """Minute/hour bars: a ``to`` later than today makes the server answer nothing at all (it
+    only handles ``to`` before or equal to today), so cut it to the end of today. Daily bars
+    are not affected, and a range that starts in the future is left alone (it is empty anyway).
+    """
+    if timeframe is Timeframe.DAY_1:
+        return to_date
+    today = datetime.now().date()
+    if parse_date_arg(to_date, "to", allow_time=True).date() > today >= parse_date_arg(
+        from_date, "from", allow_time=True
+    ).date():
+        return from_end_of_day()
+    return to_date
+
+
+_DATE_ONLY = re.compile(r"\d{4}[/-]\d{2}[/-]\d{2}")
+
+
+def _with_time(value: str, time_text: str) -> str:
+    """``YYYY/MM/DD`` -> ``YYYY/MM/DD <time_text>``: the OHLC endpoint answers 400213 ("Invalid
+    Date/Timestamp Format") to a bare date, so a date alone is completed with a time."""
+    text = value.strip()
+    if _DATE_ONLY.fullmatch(text):
+        return f"{text.replace('-', '/')} {time_text}"
+    return value
 
 
 def _build_ohlc_params(
@@ -52,12 +155,24 @@ def _build_ohlc_params(
     page: int,
     size: int,
 ) -> dict:
-    """Build the OHLC request query params, applying default date bounds."""
-    require_non_empty(symbol, "symbol")
+    """Build the OHLC request query params, applying default date bounds.
+
+    The server accepts exactly one symbol per call and needs a full timestamp: a bare
+    ``YYYY/MM/DD`` is completed to ``00:00:00`` (from) / ``23:59:59`` (to).
+    """
+    require_symbol(symbol, "symbol")
+    _check_timeframe(timeframe)
+    _check_paging(page, size)
+    from_date = from_date or from_beginning_of_day()
+    to_date = to_date or from_end_of_day()
+    require_date_range(from_date, to_date, allow_time=True)
+    from_date = _with_time(from_date, "00:00:00")
+    to_date = _with_time(to_date, "23:59:59")
+    to_date = _clamp_future_end(timeframe, from_date, to_date)
     return OHLCRequest(
         symbol=symbol,
-        from_date=from_date or from_beginning_of_day(),
-        to_date=to_date or from_end_of_day(),
+        from_date=from_date,
+        to_date=to_date,
         timeframe=timeframe,
         page=page,
         size=size,
@@ -66,17 +181,17 @@ def _build_ohlc_params(
 
 def _parse_ohlc(data: dict) -> list[OHLCData]:
     """Parse the raw OHLC response payload into a list of OHLCData."""
-    return OHLCData.from_list(data=data.get("data", []))
+    return OHLCData.from_list(data=_data_rows(data, "OHLC"))
 
 
 def _build_index_params(board: Board | None) -> dict:
     """Build the market indexes request query params."""
-    return MarketIndexesRequest(board=board).to_dict()
+    return MarketIndexesRequest(board=_rest_board(board)).to_dict()
 
 
 def _parse_indexes(data) -> list[MarketIndexes]:
     """Parse the raw indexes response payload into a list of MarketIndexes."""
-    return MarketIndexes.from_list(data)
+    return MarketIndexes.from_list(_rows(data, "indexes"))
 
 
 def _build_index_summary_params(
@@ -87,14 +202,14 @@ def _build_index_summary_params(
     """Build the market index summary request query params."""
     return MarketIndexSummaryRequest(
         index=index,
-        board=board,
+        board=_rest_board(board),
         trading_date=trading_date,
     ).to_dict()
 
 
 def _parse_index_summary(data) -> list[MarketIndexSummary]:
     """Parse the raw index summary payload into a list of MarketIndexSummary."""
-    return MarketIndexSummary.from_list(data)
+    return MarketIndexSummary.from_list(_rows(data, "index summary"))
 
 
 def _build_securities_info_params(
@@ -103,12 +218,12 @@ def _build_securities_info_params(
     symbol: str | None,
 ) -> dict:
     """Build the securities info request query params."""
-    return SecuritiesInfoRequest(index=index, board=board, symbol=symbol).to_dict()
+    return SecuritiesInfoRequest(index=index, board=_rest_board(board), symbol=symbol).to_dict()
 
 
 def _parse_securities_info(data) -> list[SecuritiesInfo]:
     """Parse the raw securities info payload into a list of SecuritiesInfo."""
-    return SecuritiesInfo.from_list(data)
+    return SecuritiesInfo.from_list(_rows(data, "securities info"))
 
 
 def _build_securities_summary_params(
@@ -119,7 +234,14 @@ def _build_securities_summary_params(
     page: int,
     size: int,
 ) -> dict:
-    """Build the securities summary request query params."""
+    """Build the securities summary request query params.
+
+    Exactly one of ``symbol``/``index`` is required and ``from``/``to`` must be
+    ``YYYY/MM/DD`` with ``from <= to``; the server enforces the same, this just fails early.
+    """
+    require_exactly_one(symbol, index, "symbol", "index")
+    require_date_range(from_date, to_date)
+    _check_paging(page, size)
     return SecuritiesSummaryRequest(
         symbol=symbol,
         index=index,
@@ -132,7 +254,7 @@ def _build_securities_summary_params(
 
 def _parse_securities_summary(data: dict) -> list[SecuritiesSummary]:
     """Parse the raw securities summary payload into a list of SecuritiesSummary."""
-    return SecuritiesSummary.from_list(data.get("data", []))
+    return SecuritiesSummary.from_list(_data_rows(data, "securities summary"))
 
 
 def _build_master_data_params(
@@ -142,6 +264,8 @@ def _build_master_data_params(
     size: int,
 ) -> dict:
     """Build the master data request query params."""
+    require_date_range(from_date, to_date)
+    _check_paging(page, size)
     return MasterDataRequest(
         from_date=from_date,
         to_date=to_date,
@@ -152,12 +276,18 @@ def _build_master_data_params(
 
 def _parse_master_data(data: dict) -> list[MasterData]:
     """Parse the raw master data response payload into a list of MasterData."""
-    return MasterData.from_list(data.get("data", []))
+    return MasterData.from_list(_data_rows(data, "master data"))
 
 
 def _master_data_pages_count(data: dict) -> int:
     """Extract the total page count from a raw master data response payload."""
-    return to_int(data.get("pagesCount"), 1)
+    return _pages_count(data)
+
+
+def _check_page_size(size: int) -> int:
+    """Page size must be positive, or an iterate-until-short-page loop never ends."""
+    require_positive(size, "size")
+    return size
 
 
 # ── async class ──────────────────────────────────────────────
@@ -190,6 +320,66 @@ class AsyncMarketDataService:
         data = await self._rest.get(EP_DATA_OHLC, params=params)
         return _parse_ohlc(data)
 
+    async def iter_ohlc(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        size: int = DEFAULT_SIZE,
+    ) -> AsyncIterator[OHLCData]:
+        """Iterate over every OHLC bar in a range, fetching page after page.
+
+        The OHLC endpoint reports no page count, so paging stops at the first empty or
+        short page. Bars arrive in server order: newest first.
+
+        Args:
+            symbol: A single ticker symbol, e.g. "VNM".
+            timeframe: Bar timeframe (1d, 1m, 3m, 5m, 15m or 1h).
+            from_date: Range start; defaults to the start of today.
+            to_date: Range end; defaults to the end of today.
+            size: Bars requested per page (> 0).
+        Yields:
+            OHLCData bars.
+        Raises:
+            ValidationError: On a bad symbol, timeframe, date range or page size.
+        """
+        _check_page_size(size)
+        page = DEFAULT_PAGE
+        while True:
+            bars = await self._get_ohlc(symbol, timeframe, from_date, to_date, page, size)
+            for bar in bars:
+                yield bar
+            if len(bars) < size:
+                return
+            page += 1
+
+    async def get_ohlc_all(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        size: int = DEFAULT_SIZE,
+        ascending: bool = False,
+    ) -> list[OHLCData]:
+        """Fetch every OHLC bar in a range across all pages.
+
+        Args:
+            symbol: A single ticker symbol, e.g. "VNM".
+            timeframe: Bar timeframe (1d, 1m, 3m, 5m, 15m or 1h).
+            from_date: Range start; defaults to the start of today.
+            to_date: Range end; defaults to the end of today.
+            size: Bars requested per page (> 0).
+            ascending: Return oldest first. The server sends newest first.
+        Returns:
+            All bars in the range.
+        Raises:
+            ValidationError: On a bad symbol, timeframe, date range or page size.
+        """
+        bars = [bar async for bar in self.iter_ohlc(symbol, timeframe, from_date, to_date, size)]
+        return bars[::-1] if ascending else bars
+
     # -- OHLC public (all preserved) -----------------------------------
 
     async def download_ohlc_1minute(self, symbol: str) -> dict:
@@ -200,7 +390,9 @@ class AsyncMarketDataService:
         Returns:
             Raw OHLC payload.
         Raises:
-            NotImplementedError: Bulk OHLC download is not implemented yet.
+            NotImplementedError: Bulk OHLC download is not implemented yet. The server has no
+                ``data/file`` endpoint yet (its final response shape is undecided), so this
+                stays unimplemented on purpose.
         """
         return await self._download_ohlc(symbol, Timeframe.MINUTE_1)
 
@@ -212,7 +404,9 @@ class AsyncMarketDataService:
         Returns:
             Raw OHLC payload.
         Raises:
-            NotImplementedError: Bulk OHLC download is not implemented yet.
+            NotImplementedError: Bulk OHLC download is not implemented yet. The server has no
+                ``data/file`` endpoint yet (its final response shape is undecided), so this
+                stays unimplemented on purpose.
         """
         return await self._download_ohlc(symbol, Timeframe.DAY_1)
 
@@ -434,7 +628,10 @@ class AsyncMarketDataService:
         page: int = DEFAULT_PAGE,
         size: int = DEFAULT_SIZE,
     ) -> list[OHLCData]:
-        """Get 1-week OHLC bars between two dates.
+        """Deprecated: the server does not serve 1-week OHLC bars.
+
+        Always raises ``ValidationError`` (the server answers 400210). Request 1-day bars with
+        ``get_ohlc_1day_historical`` and aggregate them client-side.
 
         Args:
             symbol: Ticker symbol, e.g. "VNM".
@@ -449,7 +646,7 @@ class AsyncMarketDataService:
         """
         require_non_empty(from_date, "fromDate")
         require_non_empty(to_date, "toDate")
-        return await self._get_ohlc(symbol, Timeframe.WEEK_1, from_date, to_date, page, size)
+        raise ValidationError(_WEEK_MONTH_REJECTED.format(name="1w"))
 
     async def get_ohlc_1month_historical(
         self,
@@ -459,7 +656,10 @@ class AsyncMarketDataService:
         page: int = DEFAULT_PAGE,
         size: int = DEFAULT_SIZE,
     ) -> list[OHLCData]:
-        """Get 1-month OHLC bars between two dates.
+        """Deprecated: the server does not serve 1-month OHLC bars.
+
+        Always raises ``ValidationError`` (the server answers 400210). Request 1-day bars with
+        ``get_ohlc_1day_historical`` and aggregate them client-side.
 
         Args:
             symbol: Ticker symbol, e.g. "VNM".
@@ -474,7 +674,7 @@ class AsyncMarketDataService:
         """
         require_non_empty(from_date, "fromDate")
         require_non_empty(to_date, "toDate")
-        return await self._get_ohlc(symbol, Timeframe.MONTH_1, from_date, to_date, page, size)
+        raise ValidationError(_WEEK_MONTH_REJECTED.format(name="1M"))
 
     # -- Index ---------------------------------------------------------
 
@@ -660,7 +860,19 @@ class AsyncMarketDataService:
             size,
         )
         data = await self._rest.get(EP_DATA_SECURITIES_SUMMARY, params=params)
-        return _parse_securities_summary(data)
+        items = _parse_securities_summary(data)
+        pages = _pages_count(data)
+        while page < pages and items:
+            page += 1
+            params = _build_securities_summary_params(
+                from_date, to_date, symbol, index, page, size
+            )
+            data = await self._rest.get(EP_DATA_SECURITIES_SUMMARY, params=params)
+            more = _parse_securities_summary(data)
+            if not more:
+                break
+            items.extend(more)
+        return items
 
     async def get_securities_summary(self, symbol: str) -> list[SecuritiesSummary]:
         """Get today's securities summary for a symbol.
@@ -828,6 +1040,66 @@ class MarketDataService:
         data = self._rest.get(EP_DATA_OHLC, params=params)
         return _parse_ohlc(data)
 
+    def iter_ohlc(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        size: int = DEFAULT_SIZE,
+    ) -> Iterator[OHLCData]:
+        """Iterate over every OHLC bar in a range, fetching page after page.
+
+        The OHLC endpoint reports no page count, so paging stops at the first empty or
+        short page. Bars arrive in server order: newest first.
+
+        Args:
+            symbol: A single ticker symbol, e.g. "VNM".
+            timeframe: Bar timeframe (1d, 1m, 3m, 5m, 15m or 1h).
+            from_date: Range start; defaults to the start of today.
+            to_date: Range end; defaults to the end of today.
+            size: Bars requested per page (> 0).
+        Yields:
+            OHLCData bars.
+        Raises:
+            ValidationError: On a bad symbol, timeframe, date range or page size.
+        """
+        _check_page_size(size)
+        page = DEFAULT_PAGE
+        while True:
+            bars = self._get_ohlc(symbol, timeframe, from_date, to_date, page, size)
+            for bar in bars:
+                yield bar
+            if len(bars) < size:
+                return
+            page += 1
+
+    def get_ohlc_all(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        size: int = DEFAULT_SIZE,
+        ascending: bool = False,
+    ) -> list[OHLCData]:
+        """Fetch every OHLC bar in a range across all pages.
+
+        Args:
+            symbol: A single ticker symbol, e.g. "VNM".
+            timeframe: Bar timeframe (1d, 1m, 3m, 5m, 15m or 1h).
+            from_date: Range start; defaults to the start of today.
+            to_date: Range end; defaults to the end of today.
+            size: Bars requested per page (> 0).
+            ascending: Return oldest first. The server sends newest first.
+        Returns:
+            All bars in the range.
+        Raises:
+            ValidationError: On a bad symbol, timeframe, date range or page size.
+        """
+        bars = [bar for bar in self.iter_ohlc(symbol, timeframe, from_date, to_date, size)]
+        return bars[::-1] if ascending else bars
+
     # -- OHLC public (all preserved) -----------------------------------
 
     def download_ohlc_1minute(self, symbol: str) -> dict:
@@ -838,7 +1110,9 @@ class MarketDataService:
         Returns:
             Raw OHLC payload.
         Raises:
-            NotImplementedError: Bulk OHLC download is not implemented yet.
+            NotImplementedError: Bulk OHLC download is not implemented yet. The server has no
+                ``data/file`` endpoint yet (its final response shape is undecided), so this
+                stays unimplemented on purpose.
         """
         return self._download_ohlc(symbol, Timeframe.MINUTE_1)
 
@@ -850,7 +1124,9 @@ class MarketDataService:
         Returns:
             Raw OHLC payload.
         Raises:
-            NotImplementedError: Bulk OHLC download is not implemented yet.
+            NotImplementedError: Bulk OHLC download is not implemented yet. The server has no
+                ``data/file`` endpoint yet (its final response shape is undecided), so this
+                stays unimplemented on purpose.
         """
         return self._download_ohlc(symbol, Timeframe.DAY_1)
 
@@ -1072,7 +1348,10 @@ class MarketDataService:
         page: int = DEFAULT_PAGE,
         size: int = DEFAULT_SIZE,
     ) -> list[OHLCData]:
-        """Get 1-week OHLC bars between two dates.
+        """Deprecated: the server does not serve 1-week OHLC bars.
+
+        Always raises ``ValidationError`` (the server answers 400210). Request 1-day bars with
+        ``get_ohlc_1day_historical`` and aggregate them client-side.
 
         Args:
             symbol: Ticker symbol, e.g. "VNM".
@@ -1087,7 +1366,7 @@ class MarketDataService:
         """
         require_non_empty(from_date, "fromDate")
         require_non_empty(to_date, "toDate")
-        return self._get_ohlc(symbol, Timeframe.WEEK_1, from_date, to_date, page, size)
+        raise ValidationError(_WEEK_MONTH_REJECTED.format(name="1w"))
 
     def get_ohlc_1month_historical(
         self,
@@ -1097,7 +1376,10 @@ class MarketDataService:
         page: int = DEFAULT_PAGE,
         size: int = DEFAULT_SIZE,
     ) -> list[OHLCData]:
-        """Get 1-month OHLC bars between two dates.
+        """Deprecated: the server does not serve 1-month OHLC bars.
+
+        Always raises ``ValidationError`` (the server answers 400210). Request 1-day bars with
+        ``get_ohlc_1day_historical`` and aggregate them client-side.
 
         Args:
             symbol: Ticker symbol, e.g. "VNM".
@@ -1112,7 +1394,7 @@ class MarketDataService:
         """
         require_non_empty(from_date, "fromDate")
         require_non_empty(to_date, "toDate")
-        return self._get_ohlc(symbol, Timeframe.MONTH_1, from_date, to_date, page, size)
+        raise ValidationError(_WEEK_MONTH_REJECTED.format(name="1M"))
 
     # -- Index ---------------------------------------------------------
 
@@ -1298,7 +1580,19 @@ class MarketDataService:
             size,
         )
         data = self._rest.get(EP_DATA_SECURITIES_SUMMARY, params=params)
-        return _parse_securities_summary(data)
+        items = _parse_securities_summary(data)
+        pages = _pages_count(data)
+        while page < pages and items:
+            page += 1
+            params = _build_securities_summary_params(
+                from_date, to_date, symbol, index, page, size
+            )
+            data = self._rest.get(EP_DATA_SECURITIES_SUMMARY, params=params)
+            more = _parse_securities_summary(data)
+            if not more:
+                break
+            items.extend(more)
+        return items
 
     def get_securities_summary(self, symbol: str) -> list[SecuritiesSummary]:
         """Get today's securities summary for a symbol.

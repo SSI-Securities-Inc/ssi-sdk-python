@@ -61,7 +61,10 @@ def _build_order_book_params(
 
 
 def _build_positions_params(client_id: str | None, account_no: str | None) -> dict:
-    """Build query params for the positions request."""
+    """Build query params for the positions request.
+
+    ``querySummary`` is always sent explicitly rather than left to the server default.
+    """
     return PositionsRequest(client_id=client_id, account_no=account_no).to_dict()
 
 
@@ -168,7 +171,7 @@ class AsyncPortfolioService:
         """Fetch the combined positions for the account."""
         params = _build_positions_params(client_id, account_no)
         data = await self._rest.get(EP_POSITIONS, params=params)
-        return Position.from_dict(data)
+        return Position.from_dict(data, account_no or "")
 
     async def get_equity_positions(self, account_no: str) -> list[EquityPosition]:
         """Get equity positions for a trading account.
@@ -359,7 +362,7 @@ class PortfolioService:
         """Fetch the combined positions for the account."""
         params = _build_positions_params(client_id, account_no)
         data = self._rest.get(EP_POSITIONS, params=params)
-        return Position.from_dict(data)
+        return Position.from_dict(data, account_no or "")
 
     def get_equity_positions(self, account_no: str) -> list[EquityPosition]:
         """Get equity positions for a trading account.
