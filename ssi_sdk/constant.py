@@ -11,16 +11,16 @@ DEFAULT_PAGE = 1
 # ---------------------------------------------------------------------------
 # Rate Limiting & Retries
 # ---------------------------------------------------------------------------
-DEFAULT_TIMEOUT = 60  # seconds
+DEFAULT_TIMEOUT_MS = 60_000
 DEFAULT_MAX_RETRIES = 5
-DEFAULT_RETRY_DELAY = 2  # seconds (base for exponential backoff)
+DEFAULT_RETRY_DELAY_MS = 2_000  # base for exponential backoff
 DEFAULT_RATE_LIMIT_PER_SECOND = 10
 # The server states its quota in ``X-RateLimit-Limit`` and, on 429, ``Retry-After``; the REST client
 # follows them. A 429 on a GET is waited out and retried this many times, never longer than this.
 RATE_LIMIT_MAX_RETRIES = 3
-RATE_LIMIT_DEFAULT_WAIT = 1.0  # seconds when the 429 carries no Retry-After (doubles per retry)
-RATE_LIMIT_MAX_WAIT = 30.0  # a longer wait is not taken silently: the RateLimitError is raised
-WS_THREAD_JOIN_TIMEOUT = 5  # seconds
+RATE_LIMIT_DEFAULT_WAIT_MS = 1_000  # when the 429 carries no Retry-After (doubles per retry)
+RATE_LIMIT_MAX_WAIT_MS = 30_000  # a longer wait is not taken silently: the RateLimitError is raised
+WS_THREAD_JOIN_TIMEOUT_MS = 5_000
 
 # ---------------------------------------------------------------------------
 # HTTP Headers & Auth
@@ -68,8 +68,8 @@ EP_REQUEST_OTP = "/api/v3/auth/requestOtp"
 SMART_OTP_PENDING_STATUS = 202
 SMART_OTP_PENDING_CODE = 401114
 
-# Treat a token as expired this many seconds early so it never expires mid-request.
-TOKEN_EXPIRY_SKEW_SECONDS = 30
+# Treat a token as expired this many milliseconds early so it never expires mid-request.
+TOKEN_EXPIRY_SKEW_MS = 30_000
 
 # Smart OTP codes after which polling can never succeed (rejected / expired / unknown
 # transaction): stop immediately instead of polling on.
@@ -86,11 +86,11 @@ HTTP_STATUS_CONFLICT = 409
 # Smart OTP approval polling — max number of authenticate() attempts and the
 # delay between them.
 SMART_OTP_POLL_MAX_RETRIES = 5
-SMART_OTP_POLL_INTERVAL = 5  # seconds
+SMART_OTP_POLL_INTERVAL_MS = 5_000
 
 # Config defaults: poll every 5s for up to 60s in total.
-DEFAULT_OTP_POLL_INTERVAL = 5.0
-DEFAULT_OTP_POLL_MAX_WAIT = 60.0
+DEFAULT_OTP_POLL_INTERVAL_MS = 5_000
+DEFAULT_OTP_POLL_MAX_WAIT_MS = 60_000
 
 # ---------------------------------------------------------------------------
 # API Endpoints — Market Data
@@ -149,9 +149,9 @@ MAX_BATCH_ORDERS = 20
 # ---------------------------------------------------------------------------
 # WebSocket reconnect policy
 # ---------------------------------------------------------------------------
-WS_RECONNECT_MAX_DELAY = 60.0  # seconds; upper bound of the exponential backoff
-WS_RATE_LIMIT_BACKOFF = 30.0  # seconds; minimum wait after the server answers 429 on connect
-WS_TOKEN_REFRESH_LEAD = 60.0  # seconds; reconnect with a fresh token this long before expiry
+WS_RECONNECT_MAX_DELAY_MS = 60_000  # upper bound of the exponential backoff
+WS_RATE_LIMIT_BACKOFF_MS = 30_000  # minimum wait after the server answers 429 on connect
+WS_TOKEN_REFRESH_LEAD_MS = 60_000  # reconnect with a fresh token this long before expiry
 WS_SERVER_MAX_CONNECTIONS = 10  # the server allows this many sockets per client
 
 # The stream server's MaxMessageSize is 4096 bytes. Keep every frame we send under it (with a

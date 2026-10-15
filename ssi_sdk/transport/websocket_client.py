@@ -27,7 +27,7 @@ from ssi_sdk.constant import (
     HEADER_AUTHORIZATION,
     HEADER_CONTENT_TYPE,
     WS_ROUTE_ERROR,
-    WS_THREAD_JOIN_TIMEOUT,
+    WS_THREAD_JOIN_TIMEOUT_MS,
     WS_THREAD_NAME,
 )
 from ssi_sdk.exceptions import AuthenticationError, WebSocketError
@@ -461,7 +461,9 @@ class AsyncWebSocketClient:
 
     def _backoff(self, attempt: int) -> float:
         """Delay before reconnect attempt number ``attempt`` (exponential, jittered, capped)."""
-        return backoff_delay(attempt, float(self._config.retry_delay), jitter=self._random())
+        return backoff_delay(
+            attempt, float(self._config.retry_delay_ms) / 1000, jitter=self._random()
+        )
 
     # ── receive ──────────────────────────────────────────────
 
@@ -496,17 +498,20 @@ class AsyncWebSocketClient:
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     _log_handler_error(route, e)
 
-    async def wait(self, timeout: float | None = None) -> None:
+    async def wait(self, timeout_ms: float | None = None) -> None:
         """Block until the supervisor ends (disconnect or unrecoverable error) or timeout.
 
         Args:
-            timeout: Maximum seconds to wait, or None to wait indefinitely.
+            timeout_ms: Maximum milliseconds to wait, or None to wait indefinitely.
         """
         task = self._supervisor
         if task is None:
             return
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=None if timeout_ms is None else timeout_ms / 1000,
+            )
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
 
@@ -548,7 +553,7 @@ class WebSocketClient:
         """Initialize the sync WebSocket client.
 
         Args:
-            config: SDK configuration (``streaming_url``, ``proxy``, ``timeout`` ...).
+            config: SDK configuration (``streaming_url``, ``proxy``, ``timeout_ms`` ...).
             token_provider: ``provider(force_refresh) -> token``, called before every connect.
                 ``force_refresh`` is True after the server rejected the token and when cycling
                 for expiry. Without it the token from ``set_token`` is used.
@@ -629,7 +634,7 @@ class WebSocketClient:
 
         Raises:
             WebSocketError: If the first connection fails after ``config.max_retries`` attempts
-                or does not come up within ``config.timeout`` seconds.
+                or does not come up within ``config.timeout_ms`` milliseconds.
             AuthenticationError: If the server keeps rejecting the credentials, or they cannot
                 be renewed without a new OTP (``ReauthenticationRequired``).
         """
@@ -644,7 +649,7 @@ class WebSocketClient:
             target=self._supervise, daemon=True, name=WS_THREAD_NAME
         )
         self._supervisor.start()
-        timeout = self._config.timeout or 30
+        timeout = (self._config.timeout_ms or 30_000) / 1000
         if not self._ready.wait(timeout=timeout):
             self.disconnect()
             url = safe_url(self._config.streaming_url)
@@ -666,7 +671,7 @@ class WebSocketClient:
                 logger.debug("Error while closing the WebSocket", exc_info=True)
         thread = self._supervisor
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=WS_THREAD_JOIN_TIMEOUT)
+            thread.join(timeout=WS_THREAD_JOIN_TIMEOUT_MS / 1000)
         self._ws = None
         self._supervisor = None
         self._subscriptions.clear()
@@ -727,7 +732,9 @@ class WebSocketClient:
 
     def _backoff(self, attempt: int) -> float:
         """Delay before reconnect attempt number ``attempt`` (exponential, jittered, capped)."""
-        return backoff_delay(attempt, float(self._config.retry_delay), jitter=self._random())
+        return backoff_delay(
+            attempt, float(self._config.retry_delay_ms) / 1000, jitter=self._random()
+        )
 
     def _wait(self, seconds: float) -> None:
         """Sleep between connection attempts; ``disconnect()`` wakes it immediately."""
@@ -958,21 +965,21 @@ class WebSocketClient:
         self._opened.clear()
         logger.info("WebSocket connection closed (code=%s)", close_status_code)
 
-    def wait(self, timeout: float | None = None) -> None:
+    def wait(self, timeout_ms: float | None = None) -> None:
         """Block until the supervisor ends (disconnect or unrecoverable error) or timeout.
 
         Args:
-            timeout: Maximum seconds to wait, or None to wait indefinitely.
+            timeout_ms: Maximum milliseconds to wait, or None to wait indefinitely.
         """
         thread = self._supervisor
         if thread is None or not thread.is_alive():
             return
         try:
-            if timeout is None:
+            if timeout_ms is None:
                 while thread.is_alive():
                     thread.join(timeout=0.5)
             else:
-                deadline = time.monotonic() + timeout
+                deadline = time.monotonic() + timeout_ms / 1000
                 while thread.is_alive():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:

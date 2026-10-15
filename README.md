@@ -60,15 +60,15 @@ config = Config(
 | `streaming_url` | `str` | `"wss://stream.ssi.com.vn/ws/v3"` | URL WebSocket streaming |
 | `trading_api_domain` | `str` | `"https://api.ssi.com.vn"` | URL của **REST API giao dịch** (đặt lệnh, FCO, tài khoản, danh mục: `/api/v3/trading/*`, `/api/v3/account/*`), cùng kiểu với `api_url`. Giữ mặc định thì **theo `api_url`** (đổi `api_url` sang môi trường khác là trading đi theo); đặt host khác để tách riêng. Auth và dữ liệu thị trường luôn dùng `api_url`. Chấp nhận cả `host`/`host:port` (tự thêm `https://`). Token và rate limit dùng chung. URL thực tế: `Config.trading_api_url` |
 | `trading_ws_domain` | `str` | `"wss://api.ssi.com.vn/ws/v3/trading"` | URL WebSocket đặt lệnh (thử nghiệm), cùng kiểu với `streaming_url`. Đổi khi server đổi tên miền; chấp nhận cả `host`/`host:port` (tự thêm `wss://` và `/ws/v3/trading`). URL thực tế: `Config.trading_ws_url`. Mọi cấu hình khác dùng chung `Config` |
-| `timeout` | `int` | `60` | Timeout request (giây) |
+| `timeout_ms` | `int` | `60000` | Timeout request (mili-giây) |
 | `max_retries` | `int` | `5` | Số lần retry tối đa |
-| `retry_delay` | `float` | `2.0` | Delay cơ sở giữa các lần retry (exponential backoff, giây) |
+| `retry_delay_ms` | `int` | `2000` | Delay cơ sở giữa các lần retry (exponential backoff, mili-giây) |
 | `rate_limit_per_second` | `int` | `10` | Giới hạn request/giây (0 = không giới hạn) |
 | `log_level` | `str` | `"INFO"` | Mức log: DEBUG, INFO, WARNING, ERROR, CRITICAL |
 | `user_agent` | `str \| None` | `None` | User-Agent cho HTTP và payload lệnh (mặc định giữ nguyên như trước) |
 | `auto_reconnect` | `bool` | `True` | Tự mở lại socket streaming khi bị rớt (xem mục 6) |
-| `otp_poll_interval` | `float` | `5.0` | Khoảng cách giữa các lần poll Smart OTP (giây) |
-| `otp_poll_max_wait` | `float` | `60.0` | Tổng thời gian tối đa chờ approve Smart OTP (giây) |
+| `otp_poll_interval_ms` | `int` | `5000` | Khoảng cách giữa các lần poll Smart OTP (mili-giây) |
+| `otp_poll_max_wait_ms` | `int` | `60000` | Tổng thời gian tối đa chờ approve Smart OTP (mili-giây) |
 
 > `api_url`, `streaming_url`, `trading_api_domain` và `trading_ws_domain`: không truyền, `None` hoặc `""` đều lấy giá trị mặc định trong `ssi_sdk/constant.py`.
 
@@ -186,7 +186,7 @@ auth = Auth(
     api_key="YOUR_API_KEY",
     api_secret="YOUR_API_SECRET",
     private_key="YOUR_PRIVATE_KEY",
-    timeout=60,
+    timeout_ms=60_000,
     log_level="DEBUG",
 )
 ```
@@ -272,11 +272,11 @@ access_token = auth.ensure_authenticated(otp="222222")
 
 # 3) Smart OTP dạng push-approval — truyền transaction_id lấy từ
 # request_otp_typed(). Việc approve trên thiết bị là bất đồng bộ nên SDK tự
-# poll mỗi Config.otp_poll_interval giây (mặc định 5s), tổng tối đa
-# Config.otp_poll_max_wait giây (mặc định 60s).
+# poll mỗi Config.otp_poll_interval_ms mili-giây (mặc định 5000), tổng tối đa
+# Config.otp_poll_max_wait_ms mili-giây (mặc định 60000).
 otp = auth.request_otp_typed()
 access_token = auth.ensure_authenticated(transaction_id=otp.transaction_id)
-# Có thể ghi đè từng lần gọi: poll_interval=..., poll_max_retries=...
+# Có thể ghi đè từng lần gọi: poll_interval_ms=..., poll_max_retries=...
 ```
 
 Kết quả poll Smart OTP:
@@ -1029,8 +1029,8 @@ Truy cập qua `stream.streaming` (client `Stream` / `AsyncStream`). Cần gọi
 |------|--------|-------|
 | **Kết nối** | `connect()` | Kết nối WebSocket |
 | | `disconnect()` | Ngắt kết nối |
-| | `wait(timeout=None)` | Chờ nhận dữ liệu (block) |
-| **Heartbeat** | `ping(on_response=None, interval=None)` | Ping server |
+| | `wait(timeout_ms=None)` | Chờ nhận dữ liệu (block); `timeout_ms` tính bằng mili-giây |
+| **Heartbeat** | `ping(on_response=None, interval_ms=None)` | Ping server (`interval_ms` tính bằng mili-giây) |
 | **Subscribe mã** | `subscribe_symbol(symbols)` | Trade + Quote + Room |
 | | `subscribe_symbol_trade(symbols)` | Chỉ trade |
 | | `subscribe_symbol_quote(symbols)` | Chỉ quote (bid/ask) |
@@ -1073,7 +1073,9 @@ Truy cập qua `stream.streaming` (client `Stream` / `AsyncStream`). Cần gọi
 | `list_subscription()` | Hỏi server đang subscribe những topic nào → `{"trading": [...], "data": [...]}` |
 
 `interval` của `subscribe_symbol_ohlcv` / `subscribe_index_trade` chỉ nhận **`tick`, `1m`, `5m`**
-(không có 3m); `trade.index` cần mã cụ thể (không dùng `*`/danh sách/khoảng khi có interval).
+(không có 3m); `trade.index` cần mã cụ thể (không dùng `*`/khoảng khi có interval).
+`subscribe_board`/`subscribe_index` gửi `trade.<mã>@*` (+ `quote`, `room`): server chỉ rải sàn/rổ chỉ số ra các mã thành phần khi có `@*`.
+Mỗi topic chỉ một mã (hoặc khoảng `A-B`); danh sách `VNM,FPT` trong một topic bị `ValidationError` vì server không tách dấu phẩy.
 Topic được kiểm tra trước khi gửi — mã chứa ký tự lạ, hoặc loại topic chưa hỗ trợ (`asset.*`, `margin.*`), bị `ValidationError`.
 
 **Tự kết nối lại:** khi socket rớt, SDK mở lại với backoff luỹ thừa + jitter (tối đa 60s), **lấy token mới**
@@ -1225,8 +1227,8 @@ stream.streaming.subscribe_portfolio(account_no="1234561")
 # Ping một lần
 stream.streaming.ping()
 
-# Ping tự động theo interval (giây)
-stream.streaming.ping(interval=30)
+# Ping tự động theo interval (mili-giây)
+stream.streaming.ping(interval_ms=30_000)
 ```
 
 ### 6.7. Đặt lệnh qua WebSocket (thử nghiệm)
@@ -1320,7 +1322,7 @@ except SSIError as e:
 | `ReauthenticationRequired` | (con của `AuthenticationError`) Không refresh được; cần OTP mới |
 | `WebSocketError` | Lỗi kết nối hoặc giao tiếp WebSocket |
 | `ValidationError` | Lỗi validate input |
-| `RateLimitError` | Vượt quá giới hạn request — có `status_code`, `retry_after`, `limit`, `remaining` (server không gửi thời điểm reset nên `reset` thường là `None`) |
+| `RateLimitError` | Vượt quá giới hạn request — có `status_code`, `retry_after_ms` (mili-giây, đổi từ header `Retry-After` tính bằng giây), `limit`, `remaining` (giữ nguyên giá trị server gửi; `limit` là số request/giây) (server không gửi thời điểm reset nên `reset` thường là `None`) |
 
 ```python
 from ssi_sdk.exceptions import APIError, AuthenticationError, RateLimitError
@@ -1336,7 +1338,7 @@ try:
 except AuthenticationError:
     print("Cần xác thực lại")
 except RateLimitError as e:
-    print(f"Rate limited, retry sau {e.retry_after}s")
+    print(f"Rate limited, retry sau {e.retry_after_ms} ms")
 except APIError as e:
     print(f"API error {e.status_code}: {e.message}")
 ```
@@ -1364,7 +1366,7 @@ config = Config(
     api_key="YOUR_API_KEY",
     api_secret="YOUR_API_SECRET",
     max_retries=3,
-    retry_delay=1.0,
+    retry_delay_ms=1_000,
     rate_limit_per_second=5,
 )
 ```
@@ -1741,6 +1743,7 @@ from ssi_sdk.models import Account, OHLCData, PlaceOrderResponse, TradeMessage, 
 | `buying_quantity` / `bought_quantity` | `int` | SL đang mua / đã mua |
 | `selling_quantity` / `sold_quantity` | `int` | SL đang bán / đã bán |
 | `t1_sell_quantity` / `t2_sell_quantity` | `int` | SL bán T+1/2 |
+| `t1_buy_quantity` / `t2_buy_quantity` | `int` | SL mua về T+1/2 (server trả `t1BuyQuantity` / `t2BuyQuantity`) |
 | `mortgage_quantity` | `int` | SL cầm cố |
 | `restricted_quantity` | `int` | SL hạn chế |
 

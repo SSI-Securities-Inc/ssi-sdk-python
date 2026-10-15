@@ -82,15 +82,19 @@ def _json_number(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+_MARKET_WORDS = frozenset({"ATO", "ATC", "MTL", "MP", "MOK", "MAK"})
+
+
 def _price_and_slip(price: Any, slip: Any) -> tuple[str, Any]:
     """Return ``(price_text, slip)`` for an FCO price that may be a number or a word.
 
     A numeric price keeps its slip; an order-type word (``MP``/``MTL``/...) has no slip.
     """
     if isinstance(price, Enum):
-        return str(price.value), 0
+        text = str(price.value)
+        return text, (0 if text.strip().upper() in _MARKET_WORDS else slip)
     if isinstance(price, str):
-        return price, slip
+        return price, (0 if price.strip().upper() in _MARKET_WORDS else slip)
     if isinstance(price, (int, float)) and not isinstance(price, bool):
         return format_price(price), slip
     return ("" if price is None else str(price)), 0

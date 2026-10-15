@@ -12,7 +12,7 @@ Reach it through `auth.token_manager` (also delegated onto `auth`). Every method
 | Method | Arguments | What it does |
 |---|---|---|
 | `authenticate` | `(otp: str \| None = None, transaction_id: str \| None = None) -> Token` | Authenticate using consumer credentials and OTP to obtain an access token. |
-| `ensure_authenticated` | `(otp: str \| None = None, transaction_id: str \| None = None, poll_interval: float \| None = None, poll_max_retries: int \| None = None) -> str` | Ensure a valid token is available, refreshing or authenticating as needed. |
+| `ensure_authenticated` | `(otp: str \| None = None, transaction_id: str \| None = None, poll_interval_ms: float \| None = None, poll_max_retries: int \| None = None) -> str` | Ensure a valid token is available, refreshing or authenticating as needed. |
 | `refresh` | `() -> Token` | Obtain a new access token using the current refresh token. |
 | `request_otp` | `() -> dict` | Request an OTP to be sent (normal OTP) or pushed for approval (Smart OTP). |
 | `request_otp_typed` | `() -> OTPResponse` | Request an OTP and return it as an :class:`OTPResponse`. |
@@ -137,8 +137,8 @@ Reach it through `stream.streaming`. Every method below exists in a sync class (
 |---|---|---|
 | `connect` | `() -> None` | Open the WebSocket connection. |
 | `disconnect` | `() -> None` | Close the WebSocket connection (and stop the ping loop, if one is running). |
-| `list_subscription` | `(timeout: float = 5.0) -> dict[str, list[str]]` | Ask the server which topics this connection is subscribed to. |
-| `ping` | `(on_response: Callable[[dict], Any] \| None = None, interval: float \| None = None) -> None` | Send a ping to the WebSocket server. |
+| `list_subscription` | `(timeout_ms: float = 5000) -> dict[str, list[str]]` | Ask the server which topics this connection is subscribed to. |
+| `ping` | `(on_response: Callable[[dict], Any] \| None = None, interval_ms: float \| None = None) -> None` | Send a ping to the WebSocket server. |
 | `subscribe_board` | `(boards: list[Board], on_response: Callable[[dict], Any] \| None = None) -> None` | Subscribe to trade, quote, and foreign-room channels for the given boards. |
 | `subscribe_candles` | `(symbols: list[str], interval: Timeframe \| StreamInterval, on_response: Callable[[dict], Any] \| None = None) -> None` | Alias of `subscribe_symbol_ohlcv`. Subscribe to OHLCV channels for the given symbols. |
 | `subscribe_exchange_trades` | `(boards: list[Board], on_response: Callable[[dict], Any] \| None = None) -> None` | Alias of `subscribe_board`. Subscribe to trade, quote, and foreign-room channels for the given boards. |
@@ -196,7 +196,7 @@ Reach it through `stream.streaming`. Every method below exists in a sync class (
 | `unsubscribe_symbol_room` | `(symbols: list[str]) -> None` | Unsubscribe from foreign room channels for the given symbols. |
 | `unsubscribe_symbol_trade` | `(symbols: list[str]) -> None` | Unsubscribe from trade channels for the given symbols. |
 | `unsubscribe_trades` | `(symbols: list[str]) -> None` | Alias of `unsubscribe_symbol_trade`. Unsubscribe from trade channels for the given symbols. |
-| `wait` | `(timeout: float \| None = None) -> None` | Await until the connection is closed or *timeout* seconds elapse. |
+| `wait` | `(timeout_ms: float \| None = None) -> None` | Await until the connection is closed or *timeout_ms* milliseconds elapse. |
 
 Properties and callbacks (assign a function to `on_*`):
 

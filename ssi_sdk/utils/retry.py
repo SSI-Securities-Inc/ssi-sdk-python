@@ -12,7 +12,7 @@ import httpx
 
 from ssi_sdk.constant import (
     DEFAULT_MAX_RETRIES,
-    DEFAULT_RETRY_DELAY,
+    DEFAULT_RETRY_DELAY_MS,
 )
 
 
@@ -83,13 +83,13 @@ async def retry_async(
     func: Callable[..., Any],
     *args: Any,
     max_retries: int = DEFAULT_MAX_RETRIES,
-    delay: float = DEFAULT_RETRY_DELAY,
+    delay_ms: float = DEFAULT_RETRY_DELAY_MS,
     **kwargs: Any,
 ) -> Any:
     """Retry an async function on timeout with exponential backoff.
 
     Only retries on ``httpx.TimeoutException``. All other exceptions are
-    raised immediately without retrying.
+    raised immediately without retrying. ``delay_ms`` is in milliseconds.
     """
     max_retries = max(0, max_retries)
     for attempt in range(max_retries + 1):
@@ -98,7 +98,7 @@ async def retry_async(
         except httpx.TimeoutException:
             if attempt >= max_retries:
                 raise
-            await asyncio.sleep(delay * (2**attempt))
+            await asyncio.sleep(delay_ms / 1000 * (2**attempt))
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -106,7 +106,7 @@ def retry_sync(
     func: Callable[..., Any],
     *args: Any,
     max_retries: int = DEFAULT_MAX_RETRIES,
-    delay: float = DEFAULT_RETRY_DELAY,
+    delay_ms: float = DEFAULT_RETRY_DELAY_MS,
     **kwargs: Any,
 ) -> Any:
     """Retry a synchronous function on timeout with exponential backoff.
@@ -121,5 +121,5 @@ def retry_sync(
         except httpx.TimeoutException:
             if attempt >= max_retries:
                 raise
-            time.sleep(delay * (2**attempt))
+            time.sleep(delay_ms / 1000 * (2**attempt))
     raise AssertionError("unreachable")  # pragma: no cover

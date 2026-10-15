@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from ssi_sdk.constant import TOKEN_EXPIRY_SKEW_SECONDS
+from ssi_sdk.constant import TOKEN_EXPIRY_SKEW_MS
 from ssi_sdk.utils.converter import to_int
 
 # Epoch values at or above this are milliseconds (10^10 s is the year 2286).
@@ -93,7 +93,7 @@ class Token:
             return False
         if self.refresh_token_expires_at <= 0:
             return True
-        return time.time() < self.refresh_token_expires_at - TOKEN_EXPIRY_SKEW_SECONDS
+        return time.time() < self.refresh_token_expires_at - TOKEN_EXPIRY_SKEW_MS / 1000
 
     @classmethod
     def from_dict(cls, data: dict) -> Token:

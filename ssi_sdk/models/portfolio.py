@@ -248,6 +248,8 @@ class EquityPosition:
     sold_quantity: int = 0
     t1_sell_quantity: int = 0
     t2_sell_quantity: int = 0
+    t1_buy_quantity: int = 0
+    t2_buy_quantity: int = 0
     cost_price: float = 0.0
     mortgage_quantity: int = 0
     sellable_quantity: int = 0
@@ -276,6 +278,8 @@ class EquityPosition:
                 sold_quantity=to_int(item.get("soldQuantity", 0)),
                 t1_sell_quantity=to_int(item.get("t1SellQuantity", 0)),
                 t2_sell_quantity=to_int(item.get("t2SellQuantity", 0)),
+                t1_buy_quantity=to_int(item.get("t1BuyQuantity", 0)),
+                t2_buy_quantity=to_int(item.get("t2BuyQuantity", 0)),
                 cost_price=to_float(item.get("costPrice")),
                 mortgage_quantity=to_int(item.get("mortgageQuantity", 0)),
                 sellable_quantity=to_int(item.get("sellableQuantity", 0)),

@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from ssi_sdk.constant import (
     DEFAULT_API_URL,
     DEFAULT_MAX_RETRIES,
-    DEFAULT_OTP_POLL_INTERVAL,
-    DEFAULT_OTP_POLL_MAX_WAIT,
+    DEFAULT_OTP_POLL_INTERVAL_MS,
+    DEFAULT_OTP_POLL_MAX_WAIT_MS,
     DEFAULT_RATE_LIMIT_PER_SECOND,
-    DEFAULT_RETRY_DELAY,
+    DEFAULT_RETRY_DELAY_MS,
     DEFAULT_STREAMING_URL,
-    DEFAULT_TIMEOUT,
+    DEFAULT_TIMEOUT_MS,
     DEFAULT_TRADING_API_DOMAIN,
     DEFAULT_TRADING_WS_DOMAIN,
     MAX_BATCH_ORDERS,
@@ -29,7 +29,7 @@ _ENDPOINT_DEFAULTS = {
 }
 
 
-@dataclass
+@dataclass(repr=False)
 class Config:
     """SDK configuration.
 
@@ -52,9 +52,9 @@ class Config:
         api_key: API key for API authentication.
         api_secret: API secret for API authentication.
         private_key: Private key for API authentication.
-        timeout: Request timeout in seconds.
+        timeout_ms: Request timeout in milliseconds.
         max_retries: Maximum number of retry attempts for failed requests.
-        retry_delay: Base delay in seconds between retries (exponential backoff).
+        retry_delay_ms: Base delay in milliseconds between retries (exponential backoff).
         rate_limit_per_second: Maximum requests per second (0 = unlimited).
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).
         max_batch_orders: Most orders in one batch request. The server's default is 20 (it is
@@ -62,8 +62,8 @@ class Config:
         proxy: Proxy URL (e.g. 'http://user:pass@host:port' or 'socks5://host:port').
         user_agent: Optional User-Agent for HTTP requests and order payloads.
         auto_reconnect: Re-open a dropped streaming socket automatically.
-        otp_poll_interval: Seconds between Smart OTP approval polls.
-        otp_poll_max_wait: Total seconds to keep polling for Smart OTP approval.
+        otp_poll_interval_ms: Milliseconds between Smart OTP approval polls.
+        otp_poll_max_wait_ms: Total milliseconds to keep polling for Smart OTP approval.
     """
 
     client_id: str = ""
@@ -74,17 +74,31 @@ class Config:
     api_key: str = ""
     api_secret: str = field(default="", repr=False)
     private_key: str = field(default="", repr=False)
-    timeout: int = DEFAULT_TIMEOUT
+    timeout_ms: int = DEFAULT_TIMEOUT_MS
     max_retries: int = DEFAULT_MAX_RETRIES
-    retry_delay: float = DEFAULT_RETRY_DELAY
+    retry_delay_ms: int = DEFAULT_RETRY_DELAY_MS
     rate_limit_per_second: int = DEFAULT_RATE_LIMIT_PER_SECOND
     log_level: str = "INFO"
     max_batch_orders: int = MAX_BATCH_ORDERS
     proxy: str | None = None
     user_agent: str | None = None
     auto_reconnect: bool = True
-    otp_poll_interval: float = DEFAULT_OTP_POLL_INTERVAL
-    otp_poll_max_wait: float = DEFAULT_OTP_POLL_MAX_WAIT
+    otp_poll_interval_ms: int = DEFAULT_OTP_POLL_INTERVAL_MS
+    otp_poll_max_wait_ms: int = DEFAULT_OTP_POLL_MAX_WAIT_MS
+
+    def __repr__(self) -> str:
+        from ssi_sdk.utils.redact import mask, safe_url
+
+        shown = {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if f.name not in ("api_secret", "private_key")
+        }
+        if shown["api_key"]:
+            shown["api_key"] = mask(shown["api_key"])
+        if shown["proxy"]:
+            shown["proxy"] = safe_url(shown["proxy"])
+        return f"Config({', '.join(f'{k}={v!r}' for k, v in shown.items())})"
 
     def __post_init__(self) -> None:
         """Fill the four endpoints that were left out, ``None`` or blank with their defaults."""

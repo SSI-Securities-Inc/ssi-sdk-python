@@ -3,9 +3,37 @@
 All notable changes to `ssi-sdk`. The version lives in `ssi_sdk/_version.py`.
 
 Items marked **BREAKING** change behaviour callers may depend on; the rest are additive or fixes.
-Renamed members keep their old name as a read-only alias that emits `DeprecationWarning`.
+Renamed members keep their old name as a read-only alias that emits `DeprecationWarning`, except the
+duration renames in 3.3.0 (see the table below): they have no alias on purpose, because `timeout=30`
+would silently become 30 ms instead of 30 s.
+
 
 ## 3.3.0 - 2026-10-08
+
+### Changed - BREAKING: every public duration is in milliseconds
+All four SDKs now use milliseconds, and every name carries the `_ms` suffix. The old names are gone and
+raise `TypeError` (unknown option / keyword). Convert your values: `timeout=30` becomes `timeout_ms=30_000`.
+
+| Old (seconds) | New (milliseconds) | Default |
+|---|---|---|
+| `Config.timeout` | `Config.timeout_ms` | 60000 |
+| `Config.retry_delay` | `Config.retry_delay_ms` | 2000 |
+| `Config.otp_poll_interval` | `Config.otp_poll_interval_ms` | 5000 |
+| `Config.otp_poll_max_wait` | `Config.otp_poll_max_wait_ms` | 60000 |
+| `authenticate/ensure_authenticated(poll_interval=)` | `poll_interval_ms=` | `Config.otp_poll_interval_ms` |
+| `streaming.wait(timeout=)` | `wait(timeout_ms=)` | `None` (wait forever) |
+| `streaming.ping(interval=)` | `ping(interval_ms=)` | `None` (one ping) |
+| `streaming.list_subscription(timeout=5.0)` | `list_subscription(timeout_ms=5000)` | 5000 |
+| `trading_ws(request_timeout=)` | `request_timeout_ms=` | 10000 |
+| `trading_ws(handshake_grace=)` | `handshake_grace_ms=` | 500 |
+| `trading_ws(max_rate_limit_wait=)` | `max_rate_limit_wait_ms=` | 2000 |
+| `trading_ws(ping_interval=)` | `ping_interval_ms=` | 30000 |
+| `retry_async/retry_sync(delay=)` | `delay_ms=` | 2000 |
+| `RateLimitError.retry_after` (seconds) | `RateLimitError.retry_after_ms` (the `Retry-After` header is in seconds and is converted) | `None` |
+| constants `DEFAULT_TIMEOUT`, `DEFAULT_RETRY_DELAY`, `TOKEN_EXPIRY_SKEW_SECONDS`, `WS_*`, ... | same names with `_MS` and millisecond values | |
+
+`RateLimitError.limit`/`remaining`/`reset` keep the server's values (`limit` is requests per second).
+Token `expiresAt` stays epoch seconds, as the server sends it.
 
 ### Security
 - Secrets no longer reach logs, reprs or exception text: `Config`, `Token`, `TokenRequest`,
@@ -15,6 +43,7 @@ Renamed members keep their old name as a read-only alias that emits `Deprecation
   `print(request)` is gone; exception `response_body` is masked (`ssi_sdk.utils.redact`).
 - `Auth(config, **kwargs)` / `Data(...)` etc. no longer mutate the caller's `Config` and raise
   `TypeError` on an unknown option instead of silently ignoring it.
+- `Config.__repr__` masks `api_key` and drops the credentials from the `proxy` URL; the streaming parser no longer logs raw DATA frames.
 - **Action for the owner:** a Bearer token used to be written to the log by the WebSocket client;
   revoke/rotate any token that was logged with an older version.
 
@@ -31,7 +60,7 @@ Renamed members keep their old name as a read-only alias that emits `Deprecation
   full guide for developers and AI agents.
 - `OTPResponse` and `request_otp_typed()` (`transaction_id` exists only for Smart OTP).
 - Exceptions: `SmartOTPPendingError`, `SmartOTPRejectedError`, `ReauthenticationRequired`,
-  `DuplicateRequestError`; `RateLimitError` gained `status_code`, `retry_after`, `limit`,
+  `DuplicateRequestError`; `RateLimitError` gained `status_code`, `retry_after_ms`, `limit`,
   `remaining`, `reset`; `APIError` accepts `headers`; all of them are exported from `ssi_sdk`. Enum `ServerErrorCode` covers every
   auth/OTP/refresh/signature/trading/data-validator code documented by the server (aliases for reused numbers);
   any refresh-token-unusable code (401101-401104, 401106-401108) now forces re-authentication.
@@ -157,6 +186,17 @@ Renamed members keep their old name as a read-only alias that emits `Deprecation
   server rejects those timeframes (400210).
 
 ### Fixed
+- `EquityPosition` now carries `t1_buy_quantity` / `t2_buy_quantity` (the server's `t1BuyQuantity` / `t2BuyQuantity`,
+  added to REST and trading-WS `position` next to `t1SellQuantity` / `t2SellQuantity`); they were silently dropped.
+- `subscribe_board`/`subscribe_index` (and their `unsubscribe_*`) now send `trade.<code>@*`, `quote.<code>@*` and
+  `room.<code>@*`. By the server's routing (`ConnectionManager.IsBasketIndexPattern`/`IsExchangePattern`) a basket
+  index or exchange is only fanned out to its symbols with the `@*` interval; the bare `trade.VN30`/`trade.HOSE`
+  was acked "ok" but never matched a tick. The topic builder accepts `@*` (`STREAM_INTERVAL_ALL`) for `trade`/`quote`/
+  `room`/`put`/`oddlot` with one concrete code. Based on reading the server code (its public docs still show the bare
+  form); not yet confirmed against a live server.
+- A comma list in one topic (`VNM,FPT`) is rejected with `ValidationError`: the server never splits on commas, so it
+  was acked "ok" and matched nothing. Pass a list of filters instead (one topic each).
+- FCO price words (`ATO`/`ATC`/`MTL`/`MP`/`MOK`/`MAK`, any case, string or `OrderType`) always send `slip` 0; `LO`/`PLO` and numbers keep it.
 - Server quirks the SDK now shields callers from: minute/hour OHLC with a ``to`` after today (the server then returns
   nothing) is cut to the end of today; ``page``/``size`` < 1 are refused locally (the server validates neither);
   subscribe/unsubscribe requests (and the resubscribe after a reconnect) are split into frames under the server's

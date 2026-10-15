@@ -94,7 +94,7 @@ class RateLimitError(SSIError):
     def __init__(
         self,
         message: str = "",
-        retry_after: float | None = None,
+        retry_after_ms: float | None = None,
         *,
         code: str | int | None = "RATE_LIMITED",
         status_code: int | None = 429,
@@ -108,16 +108,18 @@ class RateLimitError(SSIError):
 
         Args:
             message: Human-readable error description.
-            retry_after: Seconds to wait before retrying, from the API, if any.
+            retry_after_ms: Milliseconds to wait before retrying (the ``Retry-After`` header is in
+                seconds and is converted), if any.
             code: Server error code if the body carried one.
             status_code: HTTP status code (429 by default).
             response_body: Parsed response body, if any.
             headers: HTTP response headers, if any.
-            limit: Request quota from ``X-RateLimit-Limit``, if sent.
+            limit: Request quota from ``X-RateLimit-Limit`` (requests per second, as sent), if sent.
             remaining: Remaining quota from ``X-RateLimit-Remaining``, if sent.
-            reset: Quota reset time; the server does not send one, so usually ``None``.
+            reset: Quota reset time as the server gives it (the server sends none, so usually
+                ``None``).
         """
-        self.retry_after = retry_after
+        self.retry_after_ms = retry_after_ms
         self.limit = limit
         self.remaining = remaining
         self.reset = reset

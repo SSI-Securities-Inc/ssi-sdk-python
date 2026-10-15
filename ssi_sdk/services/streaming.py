@@ -49,7 +49,12 @@ from ssi_sdk.models.streaming import IntervalMessage
 from ssi_sdk.transport.dispatch import split_subscriptions
 from ssi_sdk.transport.reconnect import ConnectionEvent
 from ssi_sdk.transport.websocket_client import AsyncWebSocketClient, WebSocketClient
-from ssi_sdk.utils.topic import StreamInterval, build_topic, build_topics
+from ssi_sdk.utils.topic import (
+    STREAM_INTERVAL_ALL,
+    StreamInterval,
+    build_topic,
+    build_topics,
+)
 
 logger = logging.getLogger("ssi_sdk.services.streaming")
 
@@ -74,7 +79,6 @@ def _parse_data_message(msg: dict) -> Any:
     topic = msg.get("topic")
     topic = topic if isinstance(topic, str) else ""
     data = _payload(msg)
-    logger.debug(f"DATA RAW: {msg}")
     # The server upper-cases the part after the type (``market.FLAG``, ``trade.SSI``), so the
     # type is matched without regard to case.
     kind = topic.lower()
@@ -160,14 +164,31 @@ def _build_subscribe_request(
     channel: StreamingChannel,
     topic_prefix: str,
     symbols: list[str],
+    interval: str | None = None,
 ) -> RequestMessage:
     """Build a subscribe/unsubscribe RequestMessage for the given symbols.
 
     Topics are validated against what the server accepts (see ``utils.topic``).
     """
     return RequestMessage(
-        method=method, channel=channel, topics=build_topics(topic_prefix, symbols)
+        method=method,
+        channel=channel,
+        topics=build_topics(topic_prefix, symbols, interval),
     )
+
+
+# Topic types ``subscribe_board`` / ``subscribe_index`` cover; each goes out as ``<type>.<code>@*``.
+_GROUP_TOPIC_TYPES = ("trade", "quote", "room")
+
+
+def _build_group_requests(method: StreamingMethod, codes: list[str]) -> list[RequestMessage]:
+    """Build the per-type requests for an exchange/basket-index fan-out (``trade.VN30@*``)."""
+    return [
+        _build_subscribe_request(
+            method, StreamingChannel.DATA, topic_type, codes, STREAM_INTERVAL_ALL
+        )
+        for topic_type in _GROUP_TOPIC_TYPES
+    ]
 
 
 def _build_ohlcv_request(
@@ -504,15 +525,15 @@ class AsyncStreamingService(_CallbackProperties):
     async def ping(
         self,
         on_response: Callable[[dict], Any] | None = None,
-        interval: float | None = None,
+        interval_ms: float | None = None,
     ) -> None:
         """Send a ping to the WebSocket server.
 
         Args:
             on_response: Optional callback for the ping response.
-            interval: If provided, send a ping every *interval* seconds in the background.
-                      Calling ping() again cancels the previous loop. Pass ``interval=None`` to
-                      send a single ping.
+            interval_ms: If provided, send a ping every *interval_ms* milliseconds in the
+                      background. Calling ping() again cancels the previous loop. Pass
+                      ``interval_ms=None`` to send a single ping.
         """
 
         async def _send_once() -> None:
@@ -526,7 +547,7 @@ class AsyncStreamingService(_CallbackProperties):
             )
             logger.debug("Ping sent to WebSocket server")
 
-        if interval is None:
+        if interval_ms is None:
             await _send_once()
             return
 
@@ -538,14 +559,14 @@ class AsyncStreamingService(_CallbackProperties):
             try:
                 while True:
                     await _send_once()
-                    await asyncio.sleep(interval)
+                    await asyncio.sleep(interval_ms / 1000)
             except asyncio.CancelledError:
                 logger.debug("Ping loop cancelled")
             except WebSocketError:
                 logger.debug("Ping loop stopped: the connection is gone")
 
         self._ping_task = asyncio.create_task(_ping_loop())
-        logger.debug("Ping loop started with interval=%.1fs", interval)
+        logger.debug("Ping loop started with interval=%.0fms", interval_ms)
 
     async def subscribe_symbol_ohlcv(
         self,
@@ -678,14 +699,16 @@ class AsyncStreamingService(_CallbackProperties):
     ) -> None:
         """Subscribe to trade, quote, and foreign-room channels for the given boards.
 
+        Sent as ``trade.HOSE@*`` (etc.): the server only fans an exchange out to its symbols
+        with the ``@*`` interval.
+
         Args:
             boards: List of Board enums to subscribe to.
             on_response: Optional callback for the subscribe acknowledgement.
         """
         board_values = [board.value for board in boards]
-        await self.subscribe_symbol_trade(board_values, on_response)
-        await self.subscribe_symbol_quote(board_values, on_response)
-        await self.subscribe_symbol_room(board_values, on_response)
+        for request in _build_group_requests(StreamingMethod.SUBSCRIBE, board_values):
+            await self._subscribe(request, on_response)
 
     async def subscribe_index(
         self,
@@ -694,16 +717,16 @@ class AsyncStreamingService(_CallbackProperties):
     ) -> None:
         """Subscribe to trade, quote, and foreign-room channels for the given indices.
 
-        These are ``trade.<index>`` topics, i.e. the trades of the index's constituent
-        symbols. For the ticks of the index itself use ``subscribe_index_trade``.
+        These are ``trade.<index>@*`` topics, i.e. the trades of the index's constituent
+        symbols (the server only fans a basket out with the ``@*`` interval). For the ticks
+        of the index itself use ``subscribe_index_trade``.
 
         Args:
             indices: List of index codes to subscribe to.
             on_response: Optional callback for the subscribe acknowledgement.
         """
-        await self.subscribe_symbol_trade(indices, on_response)
-        await self.subscribe_symbol_quote(indices, on_response)
-        await self.subscribe_symbol_room(indices, on_response)
+        for request in _build_group_requests(StreamingMethod.SUBSCRIBE, indices):
+            await self._subscribe(request, on_response)
 
     async def unsubscribe_symbol_trade(self, symbols: list[str]) -> None:
         """Unsubscribe from trade channels for the given symbols.
@@ -786,18 +809,18 @@ class AsyncStreamingService(_CallbackProperties):
             _build_market_flag_request(StreamingMethod.UNSUBSCRIBE).to_dict()
         )
 
-    async def list_subscription(self, timeout: float = 5.0) -> dict[str, list[str]]:
+    async def list_subscription(self, timeout_ms: float = 5_000) -> dict[str, list[str]]:
         """Ask the server which topics this connection is subscribed to.
 
         Args:
-            timeout: Seconds to wait for the reply.
+            timeout_ms: Milliseconds to wait for the reply.
 
         Returns:
             ``{"trading": [...], "data": [...]}``; a channel with nothing subscribed is an empty
             list.
 
         Raises:
-            WebSocketError: If not connected, or no reply arrives within ``timeout``.
+            WebSocketError: If not connected, or no reply arrives within ``timeout_ms``.
         """
         loop = asyncio.get_running_loop()
         reply: asyncio.Future = loop.create_future()
@@ -809,7 +832,7 @@ class AsyncStreamingService(_CallbackProperties):
         self._ws.on(WS_ROUTE_LIST_SUBSCRIPTION, _on_reply)
         try:
             await self._ws.send(_build_list_subscription_request())
-            return await asyncio.wait_for(reply, timeout)
+            return await asyncio.wait_for(reply, timeout_ms / 1000)
         except asyncio.TimeoutError as exc:
             raise WebSocketError("Timed out waiting for the LIST_SUBSCRIPTION reply") from exc
         finally:
@@ -945,9 +968,8 @@ class AsyncStreamingService(_CallbackProperties):
             boards: List of Board enums to unsubscribe from.
         """
         board_values = [board.value for board in boards]
-        await self.unsubscribe_symbol_trade(board_values)
-        await self.unsubscribe_symbol_quote(board_values)
-        await self.unsubscribe_symbol_room(board_values)
+        for request in _build_group_requests(StreamingMethod.UNSUBSCRIBE, board_values):
+            await self._ws.send(request.to_dict())
 
     async def unsubscribe_index(self, indices: list[str]) -> None:
         """Unsubscribe from trade, quote, and foreign-room channels for the given indices.
@@ -955,9 +977,8 @@ class AsyncStreamingService(_CallbackProperties):
         Args:
             indices: List of index codes to unsubscribe from.
         """
-        await self.unsubscribe_symbol_trade(indices)
-        await self.unsubscribe_symbol_quote(indices)
-        await self.unsubscribe_symbol_room(indices)
+        for request in _build_group_requests(StreamingMethod.UNSUBSCRIBE, indices):
+            await self._ws.send(request.to_dict())
 
     async def subscribe_order_status(
         self,
@@ -1052,13 +1073,13 @@ class AsyncStreamingService(_CallbackProperties):
             self._ping_task.cancel()
         await self._ws.disconnect()
 
-    async def wait(self, timeout: float | None = None) -> None:
-        """Await until the connection is closed or *timeout* seconds elapse.
+    async def wait(self, timeout_ms: float | None = None) -> None:
+        """Await until the connection is closed or *timeout_ms* milliseconds elapse.
 
         Args:
-            timeout: Maximum number of seconds to wait, or None to wait indefinitely.
+            timeout_ms: Maximum number of milliseconds to wait, or None to wait indefinitely.
         """
-        await self._ws.wait(timeout)
+        await self._ws.wait(timeout_ms)
 
 
 # ---------------------------------------------------------------------------
@@ -1238,15 +1259,15 @@ class StreamingService(_CallbackProperties):
     def ping(
         self,
         on_response: Callable[[dict], Any] | None = None,
-        interval: float | None = None,
+        interval_ms: float | None = None,
     ) -> None:
         """Send a ping to the WebSocket server.
 
         Args:
             on_response: Optional callback for the ping response.
-            interval: If provided, send a ping every *interval* seconds in the background.
-                      Calling ping() again cancels the previous loop. Pass ``interval=None`` to
-                      send a single ping.
+            interval_ms: If provided, send a ping every *interval_ms* milliseconds in the
+                      background. Calling ping() again cancels the previous loop. Pass
+                      ``interval_ms=None`` to send a single ping.
         """
 
         def _send_once() -> None:
@@ -1260,19 +1281,19 @@ class StreamingService(_CallbackProperties):
             )
             logger.debug("Ping sent to WebSocket server")
 
-        if interval is None:
+        if interval_ms is None:
             _send_once()
             return
 
         # Stop any existing ping loop
         self._ping_stop.set()
         if self._ping_thread and self._ping_thread.is_alive():
-            self._ping_thread.join(timeout=interval + 1)
+            self._ping_thread.join(timeout=interval_ms / 1000 + 1)
 
         self._ping_stop.clear()
 
         def _ping_loop() -> None:
-            while not self._ping_stop.wait(timeout=interval):
+            while not self._ping_stop.wait(timeout=interval_ms / 1000):
                 try:
                     _send_once()
                 except WebSocketError:
@@ -1281,7 +1302,7 @@ class StreamingService(_CallbackProperties):
 
         self._ping_thread = threading.Thread(target=_ping_loop, daemon=True, name="ssi-ping-loop")
         self._ping_thread.start()
-        logger.debug("Ping loop started with interval=%.1fs", interval)
+        logger.debug("Ping loop started with interval=%.0fms", interval_ms)
 
     # Data channels: trade, quote, market-status, foreign-room, put, oddlot
     def subscribe_symbol_ohlcv(
@@ -1401,30 +1422,32 @@ class StreamingService(_CallbackProperties):
     ) -> None:
         """Subscribe to trade, quote, and foreign-room channels for the given boards.
 
+        Sent as ``trade.HOSE@*`` (etc.): the server only fans an exchange out to its symbols
+        with the ``@*`` interval.
+
         Args:
             boards: List of Board enums to subscribe to.
             on_response: Optional callback for the subscribe acknowledgement.
         """
-        boards = [board.value for board in boards]
-        self.subscribe_symbol_trade(boards, on_response)
-        self.subscribe_symbol_quote(boards, on_response)
-        self.subscribe_symbol_room(boards, on_response)
+        board_values = [board.value for board in boards]
+        for request in _build_group_requests(StreamingMethod.SUBSCRIBE, board_values):
+            self._subscribe(request, on_response)
 
     def subscribe_index(
         self, indices: list[str], on_response: Callable[[dict], Any] | None = None
     ) -> None:
         """Subscribe to trade, quote, and foreign-room channels for the given indices.
 
-        These are ``trade.<index>`` topics, i.e. the trades of the index's constituent
-        symbols. For the ticks of the index itself use ``subscribe_index_trade``.
+        These are ``trade.<index>@*`` topics, i.e. the trades of the index's constituent
+        symbols (the server only fans a basket out with the ``@*`` interval). For the ticks
+        of the index itself use ``subscribe_index_trade``.
 
         Args:
             indices: List of index codes to subscribe to.
             on_response: Optional callback for the subscribe acknowledgement.
         """
-        self.subscribe_symbol_trade(indices, on_response)
-        self.subscribe_symbol_quote(indices, on_response)
-        self.subscribe_symbol_room(indices, on_response)
+        for request in _build_group_requests(StreamingMethod.SUBSCRIBE, indices):
+            self._subscribe(request, on_response)
 
     def unsubscribe_symbol_trade(self, symbols: list[str]) -> None:
         """Unsubscribe from trade channels for the given symbols.
@@ -1504,18 +1527,18 @@ class StreamingService(_CallbackProperties):
             _build_market_flag_request(StreamingMethod.UNSUBSCRIBE).to_dict()
         )
 
-    def list_subscription(self, timeout: float = 5.0) -> dict[str, list[str]]:
+    def list_subscription(self, timeout_ms: float = 5_000) -> dict[str, list[str]]:
         """Ask the server which topics this connection is subscribed to.
 
         Args:
-            timeout: Seconds to wait for the reply.
+            timeout_ms: Milliseconds to wait for the reply.
 
         Returns:
             ``{"trading": [...], "data": [...]}``; a channel with nothing subscribed is an empty
             list.
 
         Raises:
-            WebSocketError: If not connected, or no reply arrives within ``timeout``.
+            WebSocketError: If not connected, or no reply arrives within ``timeout_ms``.
         """
         arrived = threading.Event()
         result: dict[str, list[str]] = {}
@@ -1527,7 +1550,7 @@ class StreamingService(_CallbackProperties):
         self._ws.on(WS_ROUTE_LIST_SUBSCRIPTION, _on_reply)
         try:
             self._ws.send(_build_list_subscription_request())
-            if not arrived.wait(timeout):
+            if not arrived.wait(timeout_ms / 1000):
                 raise WebSocketError("Timed out waiting for the LIST_SUBSCRIPTION reply")
             return result
         finally:
@@ -1662,10 +1685,9 @@ class StreamingService(_CallbackProperties):
         Args:
             boards: List of Board enums to unsubscribe from.
         """
-        boards = [board.value for board in boards]
-        self.unsubscribe_symbol_trade(boards)
-        self.unsubscribe_symbol_quote(boards)
-        self.unsubscribe_symbol_room(boards)
+        board_values = [board.value for board in boards]
+        for request in _build_group_requests(StreamingMethod.UNSUBSCRIBE, board_values):
+            self._ws.send(request.to_dict())
 
     def unsubscribe_index(self, indices: list[str]) -> None:
         """Unsubscribe from trade, quote, and foreign-room channels for the given indices.
@@ -1673,9 +1695,8 @@ class StreamingService(_CallbackProperties):
         Args:
             indices: List of index codes to unsubscribe from.
         """
-        self.unsubscribe_symbol_trade(indices)
-        self.unsubscribe_symbol_quote(indices)
-        self.unsubscribe_symbol_room(indices)
+        for request in _build_group_requests(StreamingMethod.UNSUBSCRIBE, indices):
+            self._ws.send(request.to_dict())
 
     # Trading channels: order-status, portfolio
     def subscribe_order_status(
@@ -1767,13 +1788,13 @@ class StreamingService(_CallbackProperties):
         self._ping_stop.set()
         self._ws.disconnect()
 
-    def wait(self, timeout: float | None = None) -> None:
-        """Await until the connection is closed or *timeout* seconds elapse.
+    def wait(self, timeout_ms: float | None = None) -> None:
+        """Await until the connection is closed or *timeout_ms* milliseconds elapse.
 
         Args:
-            timeout: Maximum number of seconds to wait, or None to wait indefinitely.
+            timeout_ms: Maximum number of milliseconds to wait, or None to wait indefinitely.
         """
-        self._ws.wait(timeout)
+        self._ws.wait(timeout_ms)
 
     # -- clearer names -------------------------------------------------
     # Same methods under names that say what arrives; the original names keep working.

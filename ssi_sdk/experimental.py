@@ -44,9 +44,9 @@ async def async_trading_ws(auth: AsyncAuth, **options: Any) -> AsyncTradingWSSer
     The URL comes from ``Config.trading_ws_domain`` (the one trading-WS setting; everything else
     is the shared ``Config``). ``options`` are the optional keyword arguments of
     :class:`AsyncTradingWSClient`: ``signature_encoding`` (``"auto"``/``"base64"``/``"hex"``),
-    ``request_timeout``, ``user_agent``, ``handshake_grace``, ``respect_rate_limit``,
-    ``max_rate_limit_wait``,
-    ``ping_interval``.
+    ``request_timeout_ms``, ``user_agent``, ``handshake_grace_ms``, ``respect_rate_limit``,
+    ``max_rate_limit_wait_ms``,
+    ``ping_interval_ms`` (all durations in milliseconds).
 
     The returned service has a ``close()`` coroutine (and an ``on_event`` hook on ``.client``).
 
@@ -54,7 +54,7 @@ async def async_trading_ws(auth: AsyncAuth, **options: Any) -> AsyncTradingWSSer
         TradingWSError: If the server refuses the connection after the upgrade (401/403/429/500).
     """
     config = auth.config
-    options.setdefault("request_timeout", float(config.timeout or 10))
+    options.setdefault("request_timeout_ms", float(config.timeout_ms or 10_000))
     options.setdefault("user_agent", config.user_agent)
     client = AsyncTradingWSClient(
         config.trading_ws_url,
@@ -72,7 +72,7 @@ def trading_ws(auth: Auth, **options: Any) -> TradingWSService:
     Same ``options`` as :func:`async_trading_ws`; the URL is ``Config.trading_ws_url``.
     """
     config = auth.config
-    options.setdefault("request_timeout", float(config.timeout or 10))
+    options.setdefault("request_timeout_ms", float(config.timeout_ms or 10_000))
     options.setdefault("user_agent", config.user_agent)
     client = TradingWSClient(
         config.trading_ws_url,

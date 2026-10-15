@@ -117,10 +117,10 @@ config = Config(client_id="...", api_key="...", api_secret="...",
 | `api_url` / `streaming_url` / `trading_api_domain` / `trading_ws_domain` | `https://api.ssi.com.vn` / `wss://stream.ssi.com.vn/ws/v3` / `https://api.ssi.com.vn` / `wss://api.ssi.com.vn/ws/v3/trading` | the four endpoints, all written as full URLs. `Config.trading_api_url` = host of `/api/v3/trading/*` and `/api/v3/account/*` (follows `api_url` while `trading_api_domain` is left at the default; auth and data always use `api_url`). `Config.trading_ws_url` = the trading WS URL (experimental). A bare `host[:port]` is accepted for both and gets `https://` / `wss://` |
 | `api_key`, `api_secret`, `private_key`, `client_id` | `""` | credentials; `private_key` signs orders |
 | `user_agent` | `None` | HTTP + order payload User-Agent (a browser-like default is kept for WAF reasons) |
-| `timeout` / `max_retries` / `retry_delay` | 60 / 5 / 2.0 | HTTP timeout, GET retries, backoff base |
+| `timeout_ms` / `max_retries` / `retry_delay_ms` | 60000 / 5 / 2000 | HTTP timeout (ms), GET retries, backoff base (ms) |
 | `rate_limit_per_second` | 10 | client-side throttle (0 = off) |
 | `auto_reconnect` | `True` | re-open a dropped streaming socket |
-| `otp_poll_interval` / `otp_poll_max_wait` | 5.0 / 60.0 | Smart OTP approval polling |
+| `otp_poll_interval_ms` / `otp_poll_max_wait_ms` | 5000 / 60000 | Smart OTP approval polling (ms) |
 | `proxy`, `log_level` | `None`, `INFO` | |
 
 ### 4.2 Authentication
@@ -203,7 +203,7 @@ Connection state: `is_connected`, `reconnect_count`, `last_error`, `on_connectio
 order/FCO/batch/query commands over `/ws/v3/trading`, plus `subscribe_order_events`. Not part of the facades;
 the server side is not announced as released. Order calls return the `PD` ack; outcomes come as events.
 The URL is `Config.trading_ws_domain` (normalised by `Config.trading_ws_url`); tunables are keyword arguments:
-`trading_ws(auth, signature_encoding="auto", ping_interval=None, ...)`. `"auto"` (default) signs as base64 (the public documentation) and, when
+`trading_ws(auth, signature_encoding="auto", ping_interval_ms=None, ...)` (all durations are milliseconds: `request_timeout_ms`, `handshake_grace_ms`, `max_rate_limit_wait_ms`, `ping_interval_ms`). `"auto"` (default) signs as base64 (the public documentation) and, when
 the server refuses a signature (401006/401008/401013: the command was not executed), re-sends that command once as hex and remembers
 the one that works; pass `"base64"` or `"hex"` to fix it. The upgrade request carries a browser-like `User-Agent` (the gateway's
 firewall answered 403 to the bare `websockets` one). The server may
@@ -218,7 +218,7 @@ refuse *after* HTTP 101 with `{"code","msg"}`: `connect()` raises `TradingWSErro
 SSIError
 ├── AuthenticationError ── SmartOTPPendingError · SmartOTPRejectedError · ReauthenticationRequired
 ├── APIError ───────────── DuplicateRequestError (HTTP 409)
-├── RateLimitError         (429; retry_after, limit, remaining; no reset time from the server)
+├── RateLimitError         (429; retry_after_ms, limit, remaining; no reset time from the server)
 ├── ValidationError        (input rejected locally, nothing was sent)
 └── WebSocketError ─────── TradingWSError (status, error_code, server_message)
 ```
@@ -232,7 +232,7 @@ HTTP 200 with a `{code, msg}` body whose code is not 200/204 is an `APIError` to
 | `ReauthenticationRequired` | stop; a new OTP is needed (do not retry) |
 | `SmartOTPPendingError` | the user has not approved yet; call again with the same `transaction_id` |
 | `DuplicateRequestError` | the order/batch id was already used: look the order up, don't resend |
-| `RateLimitError` | wait `retry_after` |
+| `RateLimitError` | wait `retry_after_ms` (milliseconds) |
 | `ValidationError` | fix the input; nothing reached the server |
 | `httpx.TimeoutException` on an order | **unknown outcome**: reconcile before doing anything |
 

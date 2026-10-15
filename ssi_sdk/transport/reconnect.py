@@ -1,4 +1,8 @@
-"""Pure policy for WebSocket reconnection (no I/O, shared by the sync and async clients)."""
+"""Pure policy for WebSocket reconnection (no I/O, shared by the sync and async clients).
+
+These internal helpers work in seconds (what ``asyncio``/``time`` take); the public API of
+the SDK uses milliseconds.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +11,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from ssi_sdk.constant import (
-    WS_RATE_LIMIT_BACKOFF,
-    WS_RECONNECT_MAX_DELAY,
-    WS_TOKEN_REFRESH_LEAD,
+    WS_RATE_LIMIT_BACKOFF_MS,
+    WS_RECONNECT_MAX_DELAY_MS,
+    WS_TOKEN_REFRESH_LEAD_MS,
 )
 from ssi_sdk.enums import StreamingMethod
 
@@ -40,7 +44,7 @@ class RejectionKind(enum.Enum):
 def backoff_delay(
     attempt: int,
     base: float,
-    cap: float = WS_RECONNECT_MAX_DELAY,
+    cap: float = WS_RECONNECT_MAX_DELAY_MS / 1000,
     jitter: float = 0.5,
 ) -> float:
     """Exponential backoff with jitter, bounded by ``cap`` so a loop can never run hot.
@@ -86,11 +90,11 @@ def classify_rejection(message: dict[str, Any]) -> tuple[RejectionKind, float | 
 
 def rate_limit_wait(retry_after: float | None) -> float:
     """Wait after a 429: the server's ``Retry-After`` if longer, never under the floor."""
-    return max(WS_RATE_LIMIT_BACKOFF, retry_after or 0.0)
+    return max(WS_RATE_LIMIT_BACKOFF_MS / 1000, retry_after or 0.0)
 
 
 def seconds_until_refresh(
-    expires_at: float | int | None, now: float, lead: float = WS_TOKEN_REFRESH_LEAD
+    expires_at: float | int | None, now: float, lead: float = WS_TOKEN_REFRESH_LEAD_MS / 1000
 ) -> float | None:
     """Seconds until the socket should be re-opened with a fresh token.
 

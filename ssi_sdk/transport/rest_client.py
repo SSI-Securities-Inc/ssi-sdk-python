@@ -20,9 +20,9 @@ from ssi_sdk.constant import (
     HEADER_RETRY_AFTER,
     HEADER_USER_AGENT,
     HTTP_STATUS_CONFLICT,
-    RATE_LIMIT_DEFAULT_WAIT,
+    RATE_LIMIT_DEFAULT_WAIT_MS,
     RATE_LIMIT_MAX_RETRIES,
-    RATE_LIMIT_MAX_WAIT,
+    RATE_LIMIT_MAX_WAIT_MS,
     SMART_OTP_PENDING_CODE,
     SMART_OTP_PENDING_STATUS,
     SMART_OTP_TERMINAL_CODES,
@@ -60,15 +60,15 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
-def _retry_after_seconds(value: str | None) -> float | None:
-    """Parse ``Retry-After`` (delta-seconds); an HTTP-date or garbage yields None."""
+def _retry_after_ms(value: str | None) -> float | None:
+    """Parse ``Retry-After`` (delta-seconds) into milliseconds; an HTTP-date or garbage is None."""
     if value is None:
         return None
     try:
         seconds = float(value)
     except ValueError:
         return None
-    return seconds if seconds >= 0 else None
+    return seconds * 1000 if seconds >= 0 else None
 
 
 def _server_code(body: Any) -> int | str | None:
@@ -110,7 +110,7 @@ def _error_for(response: httpx.Response, body: Any) -> SSIError:
     if status == HTTPStatus.TOO_MANY_REQUESTS:
         return RateLimitError(
             message,
-            retry_after=_retry_after_seconds(response.headers.get(HEADER_RETRY_AFTER)),
+            retry_after_ms=_retry_after_ms(response.headers.get(HEADER_RETRY_AFTER)),
             code=shown_code,
             limit=_int_or_none(response.headers.get(HEADER_RATE_LIMIT_LIMIT)),
             remaining=_int_or_none(response.headers.get(HEADER_RATE_LIMIT_REMAINING)),
@@ -182,9 +182,13 @@ def _route(config: Config, path: str) -> str:
 
 
 def _rate_wait(error: RateLimitError, attempt: int) -> float | None:
-    """How long to wait after a 429 (``Retry-After``, else 1s doubling), or None to give up."""
-    wait = error.retry_after if error.retry_after else RATE_LIMIT_DEFAULT_WAIT * (2**attempt)
-    return wait if wait <= RATE_LIMIT_MAX_WAIT else None
+    """Seconds to wait after a 429 (``Retry-After``, else 1s doubling), or None to give up."""
+    wait_ms = (
+        error.retry_after_ms
+        if error.retry_after_ms
+        else RATE_LIMIT_DEFAULT_WAIT_MS * (2**attempt)
+    )
+    return wait_ms / 1000 if wait_ms <= RATE_LIMIT_MAX_WAIT_MS else None
 
 
 def _observe_rate_limit(limiter: RateLimiter, response: httpx.Response) -> dict[str, int | None]:
@@ -232,7 +236,7 @@ class AsyncRestClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 base_url=self._config.api_url,
-                timeout=self._config.timeout,
+                timeout=self._config.timeout_ms / 1000,
                 headers=self._headers,
                 proxy=self._config.proxy,
                 transport=self._transport,
@@ -328,7 +332,7 @@ class AsyncRestClient:
                 return await retry_async(
                     _do_request,
                     max_retries=self._config.max_retries,
-                    delay=self._config.retry_delay,
+                    delay_ms=self._config.retry_delay_ms,
                 )
             except RateLimitError as exc:
                 wait = _rate_wait(exc, attempt)
@@ -431,7 +435,7 @@ class RestClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.Client(
                 base_url=self._config.api_url,
-                timeout=self._config.timeout,
+                timeout=self._config.timeout_ms / 1000,
                 headers=self._headers,
                 proxy=self._config.proxy,
                 transport=self._transport,
@@ -528,7 +532,7 @@ class RestClient:
                 return retry_sync(
                     _do_request,
                     max_retries=self._config.max_retries,
-                    delay=self._config.retry_delay,
+                    delay_ms=self._config.retry_delay_ms,
                 )
             except RateLimitError as exc:
                 wait = _rate_wait(exc, attempt)

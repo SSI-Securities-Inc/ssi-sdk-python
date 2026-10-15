@@ -53,7 +53,7 @@ from ssi_sdk.constant import (
     HEADER_AUTHORIZATION,
     HEADER_USER_AGENT,
     MAX_BATCH_ORDERS,
-    WS_THREAD_JOIN_TIMEOUT,
+    WS_THREAD_JOIN_TIMEOUT_MS,
 )
 from ssi_sdk.exceptions import TradingWSError, WebSocketError
 from ssi_sdk.transport.websocket_client import _require_wss
@@ -240,12 +240,12 @@ class AsyncTradingWSClient:
         token_provider: Callable[[], Any],
         private_key: str | None = None,
         *,
-        request_timeout: float = 10.0,
+        request_timeout_ms: float = 10_000,
         signature_encoding: SignatureEncoding = "auto",
-        handshake_grace: float = 0.5,
+        handshake_grace_ms: float = 500,
         respect_rate_limit: bool = True,
-        max_rate_limit_wait: float = 2.0,
-        ping_interval: float | None = 30.0,
+        max_rate_limit_wait_ms: float = 2_000,
+        ping_interval_ms: float | None = 30_000,
         user_agent: str | None = None,
         connect_fn: Callable[..., Any] | None = None,
         clock: Callable[[], float] | None = None,
@@ -257,17 +257,17 @@ class AsyncTradingWSClient:
             url: ``wss://<domain>/ws/v3/trading`` (``Config.trading_ws_url``).
             token_provider: Returns the access token (sync or async), called on ``connect``.
             private_key: Key for signing state-changing commands (``Config.private_key``).
-            request_timeout: Seconds to wait for a response before giving up (no retry).
+            request_timeout_ms: Milliseconds to wait for a response before giving up (no retry).
             signature_encoding: ``"auto"`` (default): sign as base64 (what the public documentation
                 states) and, if the server refuses a command's signature (401006/401008/401013 --
                 the command was not executed), send it once more as hex (what REST uses) and keep
                 whichever works. ``"base64"`` / ``"hex"`` fix the encoding.
-            handshake_grace: Seconds ``connect()`` waits after the upgrade for the refusal frame the
+            handshake_grace_ms: Milliseconds ``connect()`` waits after the upgrade for the refusal frame the
                 server sends *after* HTTP 101 (``{"code": 401|403|429|500, "msg": ...}``); 0 skips.
             respect_rate_limit: After a response with ``remaining == 0`` wait for its ``resetMs``
-                (at most ``max_rate_limit_wait``) before the next command, instead of getting a 429.
-            max_rate_limit_wait: Upper bound in seconds for that wait.
-            ping_interval: Send ``ping_pong`` this often (seconds) to notice a hung connection
+                (at most ``max_rate_limit_wait_ms``) before the next command, instead of getting a 429.
+            max_rate_limit_wait_ms: Upper bound in milliseconds for that wait.
+            ping_interval_ms: Send ``ping_pong`` this often (milliseconds) to notice a hung connection
                 early; ``None`` disables it.
             user_agent: ``User-Agent`` of the upgrade request (default: the SDK's browser-like one;
                 the gateway's firewall answers 403 to the bare library one).
@@ -281,7 +281,7 @@ class AsyncTradingWSClient:
         self._url = url
         self._token_provider = token_provider
         self._private_key = private_key
-        self._timeout = request_timeout
+        self._timeout = request_timeout_ms / 1000
         self._connect_fn = connect_fn or ws_async_connect
         self._clock = clock or time.time
         self._ws: Any = None
@@ -293,10 +293,10 @@ class AsyncTradingWSClient:
             "base64" if signature_encoding == "auto" else signature_encoding
         )
         self._user_agent = user_agent or DEFAULT_USER_AGENT
-        self._grace = handshake_grace
+        self._grace = handshake_grace_ms / 1000
         self._respect_rate_limit = respect_rate_limit
-        self._max_rate_wait = max_rate_limit_wait
-        self._ping_interval = ping_interval
+        self._max_rate_wait = max_rate_limit_wait_ms / 1000
+        self._ping_interval = None if ping_interval_ms is None else ping_interval_ms / 1000
         self._rejection: TradingWSError | None = None
         self._blocked_until = 0.0
         self._pending: dict[str, asyncio.Queue] = {}
@@ -457,7 +457,7 @@ class AsyncTradingWSClient:
             self.forget(waiting)
 
     async def next_response(
-        self, waiting: asyncio.Queue, timeout: float | None = None
+        self, waiting: asyncio.Queue, timeout_ms: float | None = None
     ) -> TradingWSResponse:
         """Take the next frame from a command queue.
 
@@ -466,7 +466,9 @@ class AsyncTradingWSClient:
             WebSocketError: On timeout (the command is NOT retried) or a closed connection.
         """
         try:
-            frame = await asyncio.wait_for(waiting.get(), timeout or self._timeout)
+            frame = await asyncio.wait_for(
+                waiting.get(), timeout_ms / 1000 if timeout_ms else self._timeout
+            )
         except asyncio.TimeoutError as exc:
             raise WebSocketError("timed out waiting for a response (not retried)") from exc
         if isinstance(frame, TradingWSError):
@@ -558,12 +560,12 @@ class TradingWSClient:
         token_provider: Callable[[], str],
         private_key: str | None = None,
         *,
-        request_timeout: float = 10.0,
+        request_timeout_ms: float = 10_000,
         signature_encoding: SignatureEncoding = "auto",
-        handshake_grace: float = 0.5,
+        handshake_grace_ms: float = 500,
         respect_rate_limit: bool = True,
-        max_rate_limit_wait: float = 2.0,
-        ping_interval: float | None = 30.0,
+        max_rate_limit_wait_ms: float = 2_000,
+        ping_interval_ms: float | None = 30_000,
         user_agent: str | None = None,
         connect_fn: Callable[..., Any] | None = None,
         clock: Callable[[], float] | None = None,
@@ -578,7 +580,7 @@ class TradingWSClient:
         self._url = url
         self._token_provider = token_provider
         self._private_key = private_key
-        self._timeout = request_timeout
+        self._timeout = request_timeout_ms / 1000
         self._connect_fn = connect_fn or ws_sync.create_connection
         self._clock = clock or time.time
         self._sleep = sleep_fn or time.sleep
@@ -587,10 +589,10 @@ class TradingWSClient:
             "base64" if signature_encoding == "auto" else signature_encoding
         )
         self._user_agent = user_agent or DEFAULT_USER_AGENT
-        self._grace = handshake_grace
+        self._grace = handshake_grace_ms / 1000
         self._respect_rate_limit = respect_rate_limit
-        self._max_rate_wait = max_rate_limit_wait
-        self._ping_interval = ping_interval
+        self._max_rate_wait = max_rate_limit_wait_ms / 1000
+        self._ping_interval = None if ping_interval_ms is None else ping_interval_ms / 1000
         self._rejection: TradingWSError | None = None
         self._blocked_until = 0.0
         self._stop = threading.Event()
@@ -655,10 +657,10 @@ class TradingWSClient:
                 ws.close()
         pinger, self._pinger = self._pinger, None
         if pinger is not None and pinger is not threading.current_thread():
-            pinger.join(timeout=WS_THREAD_JOIN_TIMEOUT)
+            pinger.join(timeout=WS_THREAD_JOIN_TIMEOUT_MS / 1000)
         reader, self._reader = self._reader, None
         if reader is not None and reader is not threading.current_thread():
-            reader.join(timeout=WS_THREAD_JOIN_TIMEOUT)
+            reader.join(timeout=WS_THREAD_JOIN_TIMEOUT_MS / 1000)
         self._fail_pending()
 
     def _fail_pending(self, error: TradingWSError | None = None) -> None:
@@ -764,7 +766,7 @@ class TradingWSClient:
             self.forget(waiting)
 
     def next_response(
-        self, waiting: thread_queue.Queue, timeout: float | None = None
+        self, waiting: thread_queue.Queue, timeout_ms: float | None = None
     ) -> TradingWSResponse:
         """Take the next frame from a command queue.
 
@@ -773,7 +775,7 @@ class TradingWSClient:
             WebSocketError: On timeout (the command is NOT retried) or a closed connection.
         """
         try:
-            frame = waiting.get(timeout=timeout or self._timeout)
+            frame = waiting.get(timeout=timeout_ms / 1000 if timeout_ms else self._timeout)
         except thread_queue.Empty as exc:
             raise WebSocketError("timed out waiting for a response (not retried)") from exc
         if isinstance(frame, TradingWSError):

@@ -154,7 +154,7 @@ class AsyncAuth:
         self,
         otp: str | None = None,
         transaction_id: str | None = None,
-        poll_interval: float | None = None,
+        poll_interval_ms: float | None = None,
         poll_max_retries: int | None = None,
     ) -> str:
         """Ensure a valid token is available, refreshing or authenticating as needed.
@@ -166,11 +166,12 @@ class AsyncAuth:
             otp: Normal OTP code typed by the user — verified in a single call.
             transaction_id: Smart OTP transaction id (from ``request_otp``).
                 Since approval on the device is asynchronous, this polls
-                ``authenticate`` every ``poll_interval`` seconds until the user approves.
+                ``authenticate`` every ``poll_interval_ms`` milliseconds until the user approves.
                 If polling runs out while the transaction is still valid, call again
                 with the same ``transaction_id``.
-            poll_interval: Seconds between Smart OTP polls (default ``Config.otp_poll_interval``).
-            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait``
+            poll_interval_ms: Milliseconds between Smart OTP polls (default
+                ``Config.otp_poll_interval_ms``).
+            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait_ms``
                 divided by the interval).
         Returns:
             The current valid access token.
@@ -182,7 +183,7 @@ class AsyncAuth:
             APIError: If a refresh or authentication request fails for another reason.
         """
         return await self.token_manager.ensure_authenticated(
-            otp, transaction_id, poll_interval, poll_max_retries
+            otp, transaction_id, poll_interval_ms, poll_max_retries
         )
 
     async def request_otp(self) -> dict:
@@ -364,7 +365,7 @@ class Auth:
         self,
         otp: str | None = None,
         transaction_id: str | None = None,
-        poll_interval: float | None = None,
+        poll_interval_ms: float | None = None,
         poll_max_retries: int | None = None,
     ) -> str:
         """Ensure a valid token is available, refreshing or authenticating as needed.
@@ -376,11 +377,12 @@ class Auth:
             otp: Normal OTP code typed by the user — verified in a single call.
             transaction_id: Smart OTP transaction id (from ``request_otp``).
                 Since approval on the device is asynchronous, this polls
-                ``authenticate`` every ``poll_interval`` seconds until the user approves.
+                ``authenticate`` every ``poll_interval_ms`` milliseconds until the user approves.
                 If polling runs out while the transaction is still valid, call again
                 with the same ``transaction_id``.
-            poll_interval: Seconds between Smart OTP polls (default ``Config.otp_poll_interval``).
-            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait``
+            poll_interval_ms: Milliseconds between Smart OTP polls (default
+                ``Config.otp_poll_interval_ms``).
+            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait_ms``
                 divided by the interval).
         Returns:
             The current valid access token.
@@ -392,7 +394,7 @@ class Auth:
             APIError: If a refresh or authentication request fails for another reason.
         """
         return self.token_manager.ensure_authenticated(
-            otp, transaction_id, poll_interval, poll_max_retries
+            otp, transaction_id, poll_interval_ms, poll_max_retries
         )
 
     def request_otp(self) -> dict:

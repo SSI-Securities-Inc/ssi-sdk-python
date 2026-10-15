@@ -15,7 +15,7 @@ from ssi_sdk.constant import (
     EP_REQUEST_OTP,
     REFRESH_REAUTH_CODES,
     SMART_OTP_PENDING_CODE,
-    TOKEN_EXPIRY_SKEW_SECONDS,
+    TOKEN_EXPIRY_SKEW_MS,
 )
 from ssi_sdk.exceptions import (
     APIError,
@@ -79,14 +79,15 @@ def _is_reauth_error(error: AuthenticationError | APIError) -> bool:
     return str(error.code) in {str(code) for code in REFRESH_REAUTH_CODES}
 
 
-def _poll_attempts(config: Config, interval: float | None, max_retries: int | None) -> tuple:
-    """Resolve Smart OTP poll (interval, attempts); explicit args win over ``config``."""
-    wait = config.otp_poll_interval if interval is None else interval
+def _poll_attempts(config: Config, interval_ms: float | None, max_retries: int | None) -> tuple:
+    """Resolve Smart OTP poll (wait in seconds, attempts); explicit args win over ``config``."""
+    wait_ms = config.otp_poll_interval_ms if interval_ms is None else interval_ms
+    wait = wait_ms / 1000
     if max_retries is not None:
         return wait, max(1, max_retries)
-    if wait <= 0:
+    if wait_ms <= 0:
         return wait, 1
-    return wait, max(1, math.ceil(config.otp_poll_max_wait / wait))
+    return wait, max(1, math.ceil(config.otp_poll_max_wait_ms / wait_ms))
 
 
 def _build_refresh_request(config: Config, refresh_token: str) -> dict:
@@ -166,7 +167,7 @@ class _TokenState:
             return True
         if self._token.expires_at <= 0:
             return True
-        return time.time() >= self._token.expires_at - TOKEN_EXPIRY_SKEW_SECONDS
+        return time.time() >= self._token.expires_at - TOKEN_EXPIRY_SKEW_MS / 1000
 
     @property
     def has_refresh_token(self) -> bool:
@@ -344,7 +345,7 @@ class AsyncTokenManager(_TokenState):
         self,
         otp: str | None = None,
         transaction_id: str | None = None,
-        poll_interval: float | None = None,
+        poll_interval_ms: float | None = None,
         poll_max_retries: int | None = None,
     ) -> str:
         """Ensure a valid token is available, refreshing or authenticating as needed.
@@ -356,11 +357,12 @@ class AsyncTokenManager(_TokenState):
             otp: Normal OTP code typed by the user — verified in a single call.
             transaction_id: Smart OTP transaction id (from ``request_otp``).
                 Since approval on the device is asynchronous, this polls
-                ``authenticate`` every ``poll_interval`` seconds until the user approves.
+                ``authenticate`` every ``poll_interval_ms`` milliseconds until the user approves.
                 If polling runs out while the transaction is still valid, call again
                 with the same ``transaction_id``.
-            poll_interval: Seconds between Smart OTP polls (default ``Config.otp_poll_interval``).
-            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait``
+            poll_interval_ms: Milliseconds between Smart OTP polls (default
+                ``Config.otp_poll_interval_ms``).
+            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait_ms``
                 divided by the interval).
         Returns:
             The current valid access token.
@@ -378,7 +380,7 @@ class AsyncTokenManager(_TokenState):
         elif otp:
             await self.authenticate(otp=otp)
         elif transaction_id:
-            await self._poll_smart_otp(transaction_id, poll_interval, poll_max_retries)
+            await self._poll_smart_otp(transaction_id, poll_interval_ms, poll_max_retries)
         elif self._token is not None:
             raise ReauthenticationRequired(
                 "Session expired and cannot be refreshed — authenticate again with a new OTP"
@@ -391,14 +393,14 @@ class AsyncTokenManager(_TokenState):
         return self._token.access_token
 
     async def _poll_smart_otp(
-        self, transaction_id: str, interval: float | None, max_retries: int | None
+        self, transaction_id: str, interval_ms: float | None, max_retries: int | None
     ) -> Token:
         """Poll authenticate() with a Smart OTP transaction id until approved or polls run out.
 
         A pending approval (202/401114) keeps polling; any other error — including the
         rejected/expired/unknown-transaction codes — stops immediately.
         """
-        wait, attempts = _poll_attempts(self._config, interval, max_retries)
+        wait, attempts = _poll_attempts(self._config, interval_ms, max_retries)
         for attempt in range(1, attempts + 1):
             try:
                 return await self.authenticate(transaction_id=transaction_id)
@@ -553,7 +555,7 @@ class TokenManager(_TokenState):
         self,
         otp: str | None = None,
         transaction_id: str | None = None,
-        poll_interval: float | None = None,
+        poll_interval_ms: float | None = None,
         poll_max_retries: int | None = None,
     ) -> str:
         """Ensure a valid token is available, refreshing or authenticating as needed.
@@ -565,11 +567,12 @@ class TokenManager(_TokenState):
             otp: Normal OTP code typed by the user — verified in a single call.
             transaction_id: Smart OTP transaction id (from ``request_otp``).
                 Since approval on the device is asynchronous, this polls
-                ``authenticate`` every ``poll_interval`` seconds until the user approves.
+                ``authenticate`` every ``poll_interval_ms`` milliseconds until the user approves.
                 If polling runs out while the transaction is still valid, call again
                 with the same ``transaction_id``.
-            poll_interval: Seconds between Smart OTP polls (default ``Config.otp_poll_interval``).
-            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait``
+            poll_interval_ms: Milliseconds between Smart OTP polls (default
+                ``Config.otp_poll_interval_ms``).
+            poll_max_retries: Max Smart OTP poll attempts (default: ``Config.otp_poll_max_wait_ms``
                 divided by the interval).
         Returns:
             The current valid access token.
@@ -587,7 +590,7 @@ class TokenManager(_TokenState):
         elif otp:
             self.authenticate(otp=otp)
         elif transaction_id:
-            self._poll_smart_otp(transaction_id, poll_interval, poll_max_retries)
+            self._poll_smart_otp(transaction_id, poll_interval_ms, poll_max_retries)
         elif self._token is not None:
             raise ReauthenticationRequired(
                 "Session expired and cannot be refreshed — authenticate again with a new OTP"
@@ -600,14 +603,14 @@ class TokenManager(_TokenState):
         return self._token.access_token
 
     def _poll_smart_otp(
-        self, transaction_id: str, interval: float | None, max_retries: int | None
+        self, transaction_id: str, interval_ms: float | None, max_retries: int | None
     ) -> Token:
         """Poll authenticate() with a Smart OTP transaction id until approved or polls run out.
 
         A pending approval (202/401114) keeps polling; any other error — including the
         rejected/expired/unknown-transaction codes — stops immediately.
         """
-        wait, attempts = _poll_attempts(self._config, interval, max_retries)
+        wait, attempts = _poll_attempts(self._config, interval_ms, max_retries)
         for attempt in range(1, attempts + 1):
             try:
                 return self.authenticate(transaction_id=transaction_id)

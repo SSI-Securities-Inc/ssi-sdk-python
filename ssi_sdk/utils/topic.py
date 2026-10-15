@@ -31,11 +31,16 @@ StreamInterval = Literal["tick", "1m", "5m"]  # for IDE completion on ``interval
 _INTERVAL_TOPIC_TYPES = frozenset({"trade", "trade.index"})
 _ACCOUNT_TOPIC_TYPES = frozenset({"order", "portfolio"})  # account numbers: sent as given
 
+# ``@*`` is how the server fans a basket index (VN30) or an exchange (HOSE) out to its symbols:
+# without it ``trade.VN30`` is just an exact key that never matches a tick.
+STREAM_INTERVAL_ALL = "*"
+_ALL_INTERVAL_TOPIC_TYPES = frozenset({"trade", "quote", "room", "put", "oddlot"})
+
 # The index of HNX+UPCOM is called HNXUPCOMINDEX on the server; UPCOMINDEX is the common alias.
 _ALIASES = {"UPCOMINDEX": "HNXUPCOMINDEX"}
 
-_ITEM = r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)?"  # a code, or a range A-B
-_FILTER_RE = re.compile(rf"\*|{_ITEM}(?:,{_ITEM})*")
+# One filter per topic: ``*``, a code, or a range ``A-B``. The server does not split on commas.
+_FILTER_RE = re.compile(r"\*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)?")
 
 
 def _interval_text(interval: Timeframe | str | None) -> str | None:
@@ -53,11 +58,15 @@ def build_topic(
 
     Args:
         topic_type: One of :data:`TOPIC_TYPES`.
-        filter_: ``*``, a code (``VNM``, ``HOSE``), a comma list (``VNM,FPT``) or a range
-            (``A-B``). Codes are upper-cased (``vn30`` -> ``VN30``) except for ``order`` /
-            ``portfolio`` accounts. ``UPCOMINDEX`` is rewritten to ``HNXUPCOMINDEX``.
+        filter_: ``*``, a code (``VNM``, ``HOSE``) or a range (``A-B``); one filter per topic
+            (a comma list is rejected, pass a list to :func:`build_topics` instead). Codes are
+            upper-cased (``vn30`` -> ``VN30``) except for ``order`` / ``portfolio`` accounts.
+            ``UPCOMINDEX`` is rewritten to ``HNXUPCOMINDEX``.
         interval: ``tick``, ``1m`` or ``5m``; only valid for ``trade`` and ``trade.index``,
-            and for ``trade.index`` only with a concrete code (not ``*``, a list or a range).
+            and for ``trade.index`` only with a concrete code (not ``*`` or a range). ``*``
+            (:data:`STREAM_INTERVAL_ALL`) is the basket/exchange fan-out
+            (``trade.VN30@*``, ``quote.HOSE@*``): valid for ``trade``, ``quote``, ``room``,
+            ``put`` and ``oddlot`` with one concrete index or exchange code.
     Returns:
         The topic string.
     Raises:
@@ -69,12 +78,18 @@ def build_topic(
         raise ValidationError(f"invalid topic filter '{filter_}'")
     if topic_type not in _ACCOUNT_TOPIC_TYPES:
         filter_ = filter_.upper()  # the server upper-cases codes; ``vn30`` and ``VN30`` agree
-    filter_ = ",".join(_ALIASES.get(item, item) for item in filter_.split(","))
+    filter_ = _ALIASES.get(filter_, filter_)
 
     topic = f"{topic_type}.{filter_}"
     text = _interval_text(interval)
     if text is None:
         return topic
+    if text == STREAM_INTERVAL_ALL:
+        if topic_type not in _ALL_INTERVAL_TOPIC_TYPES:
+            raise ValidationError(f"interval '*' is not valid for {topic_type}")
+        if not re.fullmatch(r"[A-Za-z0-9]+", filter_):
+            raise ValidationError("interval '*' needs one concrete index or exchange code")
+        return f"{topic}@{text}"
     if topic_type not in _INTERVAL_TOPIC_TYPES:
         raise ValidationError(f"interval is only valid for trade and trade.index, not {topic_type}")
     if text not in STREAM_INTERVALS:
