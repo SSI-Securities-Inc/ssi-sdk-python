@@ -1,7 +1,32 @@
 """Data models for SSI SDK."""
 
 from ssi_sdk.models.account import Account
-from ssi_sdk.models.auth import OTPRequest, RefreshTokenRequest, Token, TokenRequest
+from ssi_sdk.models.auth import (
+    OTPRequest,
+    OTPResponse,
+    RefreshTokenRequest,
+    Token,
+    TokenRequest,
+)
+from ssi_sdk.models.fco import (
+    BullBearParams,
+    FCOCancelRequest,
+    FCOCancelResponse,
+    FCOInfo,
+    FCOListRequest,
+    FCOListResponse,
+    FCOOrder,
+    FCOOrderBookRequest,
+    FCOOrderBookResponse,
+    FCOParams,
+    FCOPlaceResponse,
+    FCOStatusHistoryItem,
+    FCOStatusHistoryRequest,
+    GTDParams,
+    OCOParams,
+    StopParams,
+    TrailingStopParams,
+)
 from ssi_sdk.models.market_data import (
     DownloadData,
     DownloadDataRequest,
@@ -37,47 +62,43 @@ from ssi_sdk.models.portfolio import (
     PPMMRRequest,
 )
 from ssi_sdk.models.streaming import (
+    DataMessage,
+    FCOOrderUpdateMessage,
     ForeignRoomMessage,
     HeartbeatMessage,
+    IndexSummaryMessage,
+    IndexTickMessage,
     IntervalMessage,
+    MarketDataMessage,
+    MarketFlagMessage,
     MarketStatusMessage,
     OddLotMessage,
+    OrderMatchMessage,
     OrderStatusMessage,
     PortfolioMessage,
     PutMessage,
     QuoteMessage,
     RequestMessage,
     TradeMessage,
-    FCOOrderUpdateMessage
+    TradingMessage,
 )
 from ssi_sdk.models.trading import (
+    BatchCancelOrderItem,
+    BatchOrderRequest,
+    BatchOrderResponse,
+    BatchOrderResult,
+    BatchPlaceOrderItem,
     CancelOrderRequest,
     CancelOrderResponse,
     MaxBuySellRequest,
     MaxBuySellResponse,
     ModifyOrderRequest,
     ModifyOrderResponse,
+    NumberLike,
     PlaceOrderRequest,
     PlaceOrderResponse,
+    PriceLike,
 )
-from ssi_sdk.models.fco import (
-    FCOListRequest,
-    FCOListResponse,
-    FCOInfo,
-    FCOParams,
-    FCOOrderBookRequest,
-    FCOOrder,
-    FCOOrderBookResponse,
-    FCOPlaceResponse,
-    FCOCancelRequest,
-    FCOCancelResponse,
-    GTDParams,
-    StopParams,
-    TrailingStopParams,
-    OCOParams,
-    BullBearParams,
-)
-
 
 __all__ = [
     # -------------------------------------------------------------------------
@@ -86,6 +107,7 @@ __all__ = [
     "Token",
     "TokenRequest",
     "OTPRequest",
+    "OTPResponse",
     "RefreshTokenRequest",
     # -------------------------------------------------------------------------
     # Account models
@@ -134,6 +156,13 @@ __all__ = [
     "PlaceOrderResponse",
     "ModifyOrderRequest",
     "ModifyOrderResponse",
+    "BatchCancelOrderItem",
+    "BatchPlaceOrderItem",
+    "NumberLike",
+    "PriceLike",
+    "BatchOrderRequest",
+    "BatchOrderResponse",
+    "BatchOrderResult",
     "CancelOrderRequest",
     "CancelOrderResponse",
     "MaxBuySellRequest",
@@ -151,6 +180,8 @@ __all__ = [
     "FCOPlaceResponse",
     "FCOCancelRequest",
     "FCOCancelResponse",
+    "FCOStatusHistoryItem",
+    "FCOStatusHistoryRequest",
     "GTDParams",
     "StopParams",
     "TrailingStopParams",
@@ -165,10 +196,17 @@ __all__ = [
     "QuoteMessage",
     "IntervalMessage",
     "MarketStatusMessage",
+    "MarketDataMessage",
+    "IndexSummaryMessage",
+    "IndexTickMessage",
+    "MarketFlagMessage",
+    "DataMessage",
+    "TradingMessage",
     "ForeignRoomMessage",
     "PutMessage",
     "OddLotMessage",
     "OrderStatusMessage",
+    "OrderMatchMessage",
     "PortfolioMessage",
     "FCOOrderUpdateMessage",
     # -------------------------------------------------------------------------

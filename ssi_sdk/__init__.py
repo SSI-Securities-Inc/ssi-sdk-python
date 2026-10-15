@@ -15,8 +15,13 @@ from ssi_sdk.config import Config
 from ssi_sdk.exceptions import (
     APIError,
     AuthenticationError,
+    DuplicateRequestError,
     RateLimitError,
+    ReauthenticationRequired,
+    SmartOTPPendingError,
+    SmartOTPRejectedError,
     SSIError,
+    TradingWSError,
     ValidationError,
     WebSocketError,
 )
@@ -37,6 +42,11 @@ __all__ = [
     # Exceptions
     "APIError",
     "AuthenticationError",
+    "DuplicateRequestError",
+    "ReauthenticationRequired",
+    "SmartOTPPendingError",
+    "SmartOTPRejectedError",
+    "TradingWSError",
     "SSIError",
     "RateLimitError",
     "ValidationError",

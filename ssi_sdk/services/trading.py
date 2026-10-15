@@ -3,47 +3,76 @@
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Mapping, Sequence
+from typing import Any
 
+from ssi_sdk.config import Config
 from ssi_sdk.constant import (
+    EP_TRADING_FCO_LIST,
+    EP_TRADING_FCO_ORDER,
+    EP_TRADING_FCO_ORDER_BOOK,
+    EP_TRADING_FCO_STATUS_HISTORY,
     EP_TRADING_MAX_BUY_SELL,
     EP_TRADING_ORDER,
+    EP_TRADING_ORDER_BATCH,
     HEADER_SIGNATURE,
-    EP_TRADING_FCO_ORDER,
-    EP_TRADING_FCO_LIST,
-    EP_TRADING_FCO_ORDER_BOOK,
+    MAX_BATCH_ORDERS,
+    MAX_CLIENT_REQUEST_ID_LENGTH,
 )
-from ssi_sdk.enums import OrderSide, OrderType, FCOOperator, FCOType
+from ssi_sdk.enums import (
+    FCOOperator,
+    FCOOperatorLike,
+    FCOStatusLike,
+    FCOType,
+    FCOTypeLike,
+    OrderSide,
+    OrderType,
+)
+from ssi_sdk.exceptions import ValidationError
 from ssi_sdk.models import (
+    BatchCancelOrderItem,
+    BatchOrderRequest,
+    BatchOrderResponse,
+    BatchPlaceOrderItem,
+    BullBearParams,
     CancelOrderRequest,
     CancelOrderResponse,
-    MaxBuySellRequest,
-    MaxBuySellResponse,
-    ModifyOrderRequest,
-    ModifyOrderResponse,
-    PlaceOrderRequest,
-    PlaceOrderResponse,
+    FCOCancelRequest,
+    FCOCancelResponse,
     FCOInfo,
     FCOListRequest,
     FCOListResponse,
     FCOOrderBookRequest,
     FCOOrderBookResponse,
     FCOPlaceResponse,
-    FCOCancelRequest,
-    FCOCancelResponse,
+    FCOStatusHistoryItem,
+    FCOStatusHistoryRequest,
     GTDParams,
+    MaxBuySellRequest,
+    MaxBuySellResponse,
+    ModifyOrderRequest,
+    ModifyOrderResponse,
+    NumberLike,
+    OCOParams,
+    PlaceOrderRequest,
+    PlaceOrderResponse,
+    PriceLike,
     StopParams,
     TrailingStopParams,
-    OCOParams,
-    BullBearParams,
 )
 from ssi_sdk.transport.rest_client import AsyncRestClient, RestClient
 from ssi_sdk.utils import (
     generate_request_id,
-    require_empty,
+    get_device_id,
+    parse_date_arg,
+    require_date_range,
+    require_exactly_one,
     require_non_empty,
     require_non_negative,
     require_positive,
     sign,
+    to_price_decimal,
 )
 
 logger = logging.getLogger("ssi_sdk.services.trading")
@@ -52,19 +81,62 @@ logger = logging.getLogger("ssi_sdk.services.trading")
 # ── shared logic ─────────────────────────────────────────────
 
 
+_PRICED_ORDER_TYPES = (OrderType.LO, OrderType.PLO)
+
+
+def _operator(value: FCOOperatorLike) -> FCOOperator:
+    """Accept an ``FCOOperator`` or its string (``"greater_or_equal"``...); refuse anything else."""
+    resolved = FCOOperator.from_value(value)
+    if resolved is None:
+        allowed = ", ".join(member.value for member in FCOOperator)
+        raise ValidationError(f"operator must be one of {allowed}, got {value!r}")
+    return resolved
+
+
+def _identity(config: Config) -> dict:
+    """Request fields every order payload takes from ``Config`` (device id, user agent)."""
+    identity = {"device_id": get_device_id()}
+    if config.user_agent:
+        identity["user_agent"] = config.user_agent
+    return identity
+
+
+def _client_request_id(value: str | None) -> str:
+    """Use the caller's idempotency key, or generate a random one (<= 20 chars).
+
+    A caller-chosen key lets an order that timed out be looked up (or safely re-sent with
+    the same key — the server answers 409 if the first one went through).
+    """
+    if value is None:
+        return generate_request_id()
+    require_non_empty(value, "clientRequestId")
+    if len(value) > MAX_CLIENT_REQUEST_ID_LENGTH:
+        raise ValidationError(
+            f"clientRequestId must be at most {MAX_CLIENT_REQUEST_ID_LENGTH} characters"
+        )
+    return value
+
+
 def _build_place_order(
     account_no: str,
     symbol: str,
     side: OrderSide,
     quantity: int,
-    price: float,
+    price: PriceLike | None,
     order_type: OrderType,
+    config: Config,
+    client_request_id: str | None = None,
 ) -> PlaceOrderRequest:
-    """Validate inputs and build a signed place-order request payload."""
+    """Validate inputs and build a place-order request payload."""
     require_non_empty(account_no, "accountNo")
     require_non_empty(symbol, "symbol")
     require_non_empty(side, "side")
     require_non_empty(order_type, "orderType")
+    if isinstance(quantity, bool) or not isinstance(quantity, int):
+        raise ValidationError(f"quantity must be an integer, got {quantity!r}")
+    require_positive(quantity, "quantity")
+    if price is None and order_type in _PRICED_ORDER_TYPES:
+        raise ValidationError(f"price is required for {order_type.value} orders")
     return PlaceOrderRequest(
         account_no=account_no,
         symbol=symbol,
@@ -72,7 +144,8 @@ def _build_place_order(
         quantity=quantity,
         price=price,
         order_type=order_type,
-        client_request_id=generate_request_id(),
+        client_request_id=_client_request_id(client_request_id),
+        **_identity(config),
     )
 
 
@@ -80,17 +153,25 @@ def _build_modify_order(
     account_no: str,
     order_id: str | None,
     client_request_id: str | None,
-    price: float | None,
+    price: PriceLike | None,
     quantity: int | None,
+    config: Config,
 ) -> ModifyOrderRequest:
-    """Validate inputs and build a modify-order request payload."""
+    """Validate inputs and build a modify-order request payload.
+
+    The order is identified by exactly one of ``order_id``/``client_request_id``, and a
+    single call changes either the price or the quantity, never both.
+    """
     require_non_empty(account_no, "accountNo")
+    require_exactly_one(order_id, client_request_id, "orderId", "clientRequestId")
+    if price is None and quantity is None:
+        raise ValidationError("either price or quantity is required")
+    if price is not None and quantity is not None:
+        raise ValidationError("price and quantity cannot be modified in the same request")
     if price is not None:
-        require_non_negative(price, "price")
-        require_empty(quantity, "quantity")
+        require_positive(to_price_decimal(price), "price")
     if quantity is not None:
         require_positive(quantity, "quantity")
-        require_empty(price, "price")
     return ModifyOrderRequest(
         account_no=account_no,
         quantity=quantity,
@@ -98,6 +179,7 @@ def _build_modify_order(
         order_id=order_id,
         client_request_id=client_request_id,
         client_modify_id=generate_request_id(),
+        **_identity(config),
     )
 
 
@@ -105,22 +187,81 @@ def _build_cancel_order(
     account_no: str,
     order_id: str | None,
     client_request_id: str | None,
+    config: Config,
 ) -> CancelOrderRequest:
-    """Validate inputs and build a cancel-order request payload."""
+    """Validate inputs and build a cancel-order request payload (exactly one order key)."""
     require_non_empty(account_no, "accountNo")
+    require_exactly_one(order_id, client_request_id, "orderId", "clientRequestId")
     return CancelOrderRequest(
         account_no=account_no,
         order_id=order_id,
         client_request_id=client_request_id,
         client_cancel_id=generate_request_id(),
+        **_identity(config),
     )
 
 
-def _build_max_buy_sell(account_no: str, symbol: str, price: int | float | None) -> dict:
+def _build_max_buy_sell(account_no: str, symbol: str, price: PriceLike | None) -> dict:
     """Validate inputs and build the max-buy/sell query parameters dict."""
     require_non_empty(account_no, "accountNo")
     require_non_empty(symbol, "symbol")
     return MaxBuySellRequest(account_no=account_no, symbol=symbol, price=price).to_dict()
+
+
+def _check_batch(
+    orders: Sequence[Mapping[str, Any]], limit: int = MAX_BATCH_ORDERS
+) -> list[Mapping[str, Any]]:
+    """A batch holds 1..``limit`` orders (``Config.max_batch_orders``, the server's default is
+    20); the server rejects bigger ones, so fail early."""
+    if not orders:
+        raise ValidationError("a batch needs at least one order")
+    if len(orders) > limit:
+        raise ValidationError(f"a batch holds at most {limit} orders, got {len(orders)}")
+    return list(orders)
+
+
+def _batch_envelope(orders: list[dict]) -> BatchOrderRequest:
+    """Batch envelope: a random id (a reused one is a 409) and the current time in epoch ms
+    (outside the server's replay window it is a 400111)."""
+    return BatchOrderRequest(
+        batch_request_id=generate_request_id(),
+        batch_request_time=int(time.time() * 1000),
+        orders=orders,
+    )
+
+
+def _build_batch_place(orders: Sequence[Mapping[str, Any]], config: Config) -> BatchOrderRequest:
+    """Validate every order first (one bad order rejects the whole batch) and build the body.
+
+    Each dict carries the ``place_order`` arguments: ``account_no``, ``symbol``, ``side``,
+    ``quantity``, ``price``, ``order_type`` and optionally ``client_request_id``.
+    """
+    built = [
+        _build_place_order(
+            item["account_no"],
+            item["symbol"],
+            item["side"],
+            item["quantity"],
+            item.get("price"),
+            item["order_type"],
+            config,
+            item.get("client_request_id"),
+        ).to_dict()
+        for item in _check_batch(orders, config.max_batch_orders)
+    ]
+    return _batch_envelope(built)
+
+
+def _build_batch_cancel(orders: Sequence[Mapping[str, Any]], config: Config) -> BatchOrderRequest:
+    """Validate every cancel first and build the body (``account_no`` and exactly one of
+    ``order_id`` / ``client_request_id`` per order)."""
+    built = [
+        _build_cancel_order(
+            item["account_no"], item.get("order_id"), item.get("client_request_id"), config
+        ).to_dict()
+        for item in _check_batch(orders, config.max_batch_orders)
+    ]
+    return _batch_envelope(built)
 
 
 def _sign_and_encode(request_model, private_key: str) -> tuple[bytes, str]:
@@ -133,17 +274,27 @@ def _sign_and_encode(request_model, private_key: str) -> tuple[bytes, str]:
 def _build_fco_list(
     account_no: str,
     fco_id: str | None,
-    type: str | None,
-    process_status: str | None,
+    type: FCOTypeLike | None,
+    process_status: FCOStatusLike | list[FCOStatusLike] | None,
     symbol: str | None,
-    side: str | None,
+    side: OrderSide | str | None,
     from_date: str | None,
     to_date: str | None,
     page_index: int | None,
     page_size: int | None,
 ) -> dict:
-    """Validate inputs and build the FCO list request payload."""
+    """Validate inputs and build the FCO list request payload.
+
+    ``from``/``to`` are ``YYYY/MM/DD HH:MM:SS`` (a bare ``YYYY/MM/DD`` is accepted too) and
+    ``from <= to``.
+    """
     require_non_empty(account_no, "accountNo")
+    if from_date is not None and to_date is not None:
+        require_date_range(from_date, to_date, allow_time=True)
+    else:
+        for name, value in (("from", from_date), ("to", to_date)):
+            if value is not None:
+                parse_date_arg(value, name, allow_time=True)
     return FCOListRequest(
         account_no=account_no,
         fco_id=fco_id,
@@ -158,20 +309,34 @@ def _build_fco_list(
     ).to_dict()
 
 
-def _build_fco_params(params: GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams) -> dict:
-    """Validate inputs and build the FCO params dict."""
-    if isinstance(params, GTDParams):
-        return params
-    elif isinstance(params, StopParams):
-        return params
-    elif isinstance(params, TrailingStopParams):
-        return params
-    elif isinstance(params, OCOParams):
-        return params
-    elif isinstance(params, BullBearParams):
-        return params
+_FCO_PARAM_TYPES = (GTDParams, StopParams, TrailingStopParams, OCOParams, BullBearParams)
+_FCO_MAX_RANGE_DAYS = 31
+
+
+def _build_fco_params(
+    params: GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams,
+    config: Config,
+) -> GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams:
+    """Validate an FCO order and fill in the caller identity from ``Config``.
+
+    The validity window must be ``YYYY/MM/DD HH:MM:SS``, ``from <= to`` and at most 31 days:
+    the API contract says so but the server does not check it, so the SDK does. The device id
+    is always this machine's (:func:`ssi_sdk.utils.get_device_id`); the server records the IP.
+    """
+    if not isinstance(params, _FCO_PARAM_TYPES):
+        raise ValidationError("Invalid FCO params type")
+    if params.from_date is not None and params.to_date is not None:
+        require_date_range(
+            params.from_date, params.to_date, time_required=True, max_days=_FCO_MAX_RANGE_DAYS
+        )
     else:
-        raise ValueError("Invalid FCO params type")
+        for name, value in (("from", params.from_date), ("to", params.to_date)):
+            if value is not None:
+                parse_date_arg(value, name, time_required=True)
+    params.device_id = get_device_id()  # always this machine's id, whatever the caller set
+    if config.user_agent:
+        params.user_agent = config.user_agent
+    return params
 
 
 # ── async class ──────────────────────────────────────────────
@@ -188,11 +353,21 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: float,
+        price: PriceLike,
         order_type: OrderType,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Build, sign, and POST a place-order request, returning the parsed response."""
-        req = _build_place_order(account_no, symbol, side, quantity, price, order_type)
+        req = _build_place_order(
+            account_no,
+            symbol,
+            side,
+            quantity,
+            price,
+            order_type,
+            self._rest.config,
+            client_request_id,
+        )
         content, sig = _sign_and_encode(req, self._rest.get_private_key())
         data = await self._rest.post(
             EP_TRADING_ORDER,
@@ -207,8 +382,9 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: float,
+        price: PriceLike,
         order_type: OrderType,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place a new order of any order type.
 
@@ -219,15 +395,24 @@ class AsyncTradingService:
             quantity: Number of shares to order.
             price: Order price in VND (0 for non-priced order types).
             order_type: Order type (LO, MTL, ATO, ATC, ...).
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing or the price is negative.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
-        require_non_negative(price, "price")
-        return await self._place_order(account_no, symbol, side, quantity, price, order_type)
+        if price is not None:
+            require_non_negative(to_price_decimal(price), "price")
+        return await self._place_order(
+            account_no, symbol, side, quantity, price, order_type, client_request_id
+        )
 
     async def place_limit_order(
         self,
@@ -235,7 +420,8 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: float,
+        price: PriceLike,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place a limit (LO) order at a specified price.
 
@@ -245,15 +431,23 @@ class AsyncTradingService:
             side: Order side (BUY or SELL).
             quantity: Number of shares to order.
             price: Limit price in VND.
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing or the price is not positive.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
-        require_positive(price, "price")
-        return await self.place_order(account_no, symbol, side, quantity, price, OrderType.LO)
+        require_positive(to_price_decimal(price), "price")
+        return await self.place_order(
+            account_no, symbol, side, quantity, price, OrderType.LO, client_request_id
+        )
 
     async def place_market_order(
         self,
@@ -261,6 +455,7 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place a market (MTL) order to execute at the best available price.
 
@@ -269,15 +464,27 @@ class AsyncTradingService:
             symbol: Ticker symbol, e.g. "VNM".
             side: Order side (BUY or SELL).
             quantity: Number of shares to order.
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
         return await self.place_order(
-            account_no, symbol, side, quantity, price=0, order_type=OrderType.MTL
+            account_no,
+            symbol,
+            side,
+            quantity,
+            price=0,
+            order_type=OrderType.MTL,
+            client_request_id=client_request_id,
         )
 
     async def place_ato_order(
@@ -286,6 +493,7 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place an at-the-open (ATO) order matched at the opening auction price.
 
@@ -294,15 +502,27 @@ class AsyncTradingService:
             symbol: Ticker symbol, e.g. "VNM".
             side: Order side (BUY or SELL).
             quantity: Number of shares to order.
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
         return await self.place_order(
-            account_no, symbol, side, quantity, price=0, order_type=OrderType.ATO
+            account_no,
+            symbol,
+            side,
+            quantity,
+            price=0,
+            order_type=OrderType.ATO,
+            client_request_id=client_request_id,
         )
 
     async def place_atc_order(
@@ -311,6 +531,7 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place an at-the-close (ATC) order matched at the closing auction price.
 
@@ -319,15 +540,27 @@ class AsyncTradingService:
             symbol: Ticker symbol, e.g. "VNM".
             side: Order side (BUY or SELL).
             quantity: Number of shares to order.
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
         return await self.place_order(
-            account_no, symbol, side, quantity, price=0, order_type=OrderType.ATC
+            account_no,
+            symbol,
+            side,
+            quantity,
+            price=0,
+            order_type=OrderType.ATC,
+            client_request_id=client_request_id,
         )
 
     async def _modify_order(
@@ -335,11 +568,13 @@ class AsyncTradingService:
         account_no: str,
         order_id: str | None = None,
         client_request_id: str | None = None,
-        price: float | None = None,
+        price: PriceLike | None = None,
         quantity: int | None = None,
     ) -> ModifyOrderResponse:
         """Build, sign, and PUT a modify-order request, returning the parsed response."""
-        req = _build_modify_order(account_no, order_id, client_request_id, price, quantity)
+        req = _build_modify_order(
+            account_no, order_id, client_request_id, price, quantity, self._rest.config
+        )
         content, sig = _sign_and_encode(req, self._rest.get_private_key())
         data = await self._rest.put(
             EP_TRADING_ORDER,
@@ -352,7 +587,7 @@ class AsyncTradingService:
         self,
         account_no: str,
         client_request_id: str,
-        price: float,
+        price: PriceLike,
     ) -> ModifyOrderResponse:
         """Modify the price of an existing order identified by client request ID.
 
@@ -360,14 +595,16 @@ class AsyncTradingService:
             account_no: Trading account number.
             client_request_id: Caller-assigned order id used to locate the order.
             price: New order price in VND.
+
         Returns:
             The modify order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
-        require_non_empty(price, "price")
+        require_positive(to_price_decimal(price), "price")
         return await self._modify_order(
             account_no=account_no, client_request_id=client_request_id, price=price
         )
@@ -376,7 +613,7 @@ class AsyncTradingService:
         self,
         account_no: str,
         order_id: str,
-        price: float,
+        price: PriceLike,
     ) -> ModifyOrderResponse:
         """Modify the price of an existing order identified by server order ID.
 
@@ -384,14 +621,16 @@ class AsyncTradingService:
             account_no: Trading account number.
             order_id: Server-assigned order id used to locate the order.
             price: New order price in VND.
+
         Returns:
             The modify order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
-        require_non_empty(price, "price")
+        require_positive(to_price_decimal(price), "price")
         return await self._modify_order(account_no=account_no, order_id=order_id, price=price)
 
     async def modify_order_quantity(
@@ -406,8 +645,10 @@ class AsyncTradingService:
             account_no: Trading account number.
             client_request_id: Caller-assigned order id used to locate the order.
             quantity: New number of shares.
+
         Returns:
             The modify order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -430,8 +671,10 @@ class AsyncTradingService:
             account_no: Trading account number.
             order_id: Server-assigned order id used to locate the order.
             quantity: New number of shares.
+
         Returns:
             The modify order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -447,7 +690,7 @@ class AsyncTradingService:
         client_request_id: str | None = None,
     ) -> CancelOrderResponse:
         """Build, sign, and DELETE a cancel-order request, returning the parsed response."""
-        req = _build_cancel_order(account_no, order_id, client_request_id)
+        req = _build_cancel_order(account_no, order_id, client_request_id, self._rest.config)
         content, sig = _sign_and_encode(req, self._rest.get_private_key())
         data = await self._rest.delete(
             EP_TRADING_ORDER,
@@ -462,8 +705,10 @@ class AsyncTradingService:
         Args:
             account_no: Trading account number.
             client_request_id: Caller-assigned order id used to locate the order.
+
         Returns:
             The cancel order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -478,8 +723,10 @@ class AsyncTradingService:
         Args:
             account_no: Trading account number.
             order_id: Server-assigned order id used to locate the order.
+
         Returns:
             The cancel order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -488,11 +735,65 @@ class AsyncTradingService:
         require_non_empty(order_id, "orderId")
         return await self._cancel_order(account_no=account_no, order_id=order_id)
 
+    async def place_batch_orders(self, orders: list[BatchPlaceOrderItem]) -> BatchOrderResponse:
+        """Place a batch of orders in one signed request (``POST /order/batch``).
+
+        At most ``Config.max_batch_orders`` orders (the server's default is 20).
+
+        All orders are validated first and the server accepts or rejects the batch as a whole.
+        ``batchRequestId`` is random and ``batchRequestTime`` is the current time; the request
+        is signed over the whole body and never retried.
+
+        Args:
+            orders: One dict per order with the ``place_order`` arguments (``account_no``,
+                    ``symbol``, ``side``, ``quantity``, ``price``, ``order_type`` and optionally
+                    ``client_request_id``).
+
+        Returns:
+            ``results`` with one entry per order (``client_request_id``, ``order_id``,
+            ``status``, ``success``, ``error_code``, ``error_message``).
+
+        Raises:
+            ValidationError: Empty batch, over ``Config.max_batch_orders`` orders, or a bad order.
+            DuplicateRequestError: The batch id was already used today (HTTP 409).
+            APIError: The server rejects the request (e.g. 400111, time outside the window).
+        """
+        request = _build_batch_place(orders, self._rest.config)
+        content, sig = _sign_and_encode(request, self._rest.get_private_key())
+        data = await self._rest.post(
+            EP_TRADING_ORDER_BATCH, content=content, headers={HEADER_SIGNATURE: sig}
+        )
+        return BatchOrderResponse.from_dict(data)
+
+    async def cancel_batch_orders(self, orders: list[BatchCancelOrderItem]) -> BatchOrderResponse:
+        """Cancel a batch of orders in one signed request (``DELETE /order/batch``).
+
+        At most ``Config.max_batch_orders`` orders (the server's default is 20).
+
+        Args:
+            orders: One dict per order: ``account_no`` and exactly one of ``order_id`` /
+                    ``client_request_id``.
+
+        Returns:
+            ``results`` as for :meth:`place_batch_orders`, plus ``client_cancel_id`` per order.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+        """
+        request = _build_batch_cancel(orders, self._rest.config)
+        content, sig = _sign_and_encode(request, self._rest.get_private_key())
+        data = await self._rest.delete(
+            EP_TRADING_ORDER_BATCH, content=content, headers={HEADER_SIGNATURE: sig}
+        )
+        return BatchOrderResponse.from_dict(data)
+
     async def _get_max_buy_sell(
         self,
         account_no: str,
         symbol: str,
-        price: int | float | None = None,
+        price: PriceLike | None = None,
     ) -> MaxBuySellResponse:
         """Build params and GET the max-buy/sell quantities, returning the parsed response."""
         params = _build_max_buy_sell(account_no, symbol, price)
@@ -506,7 +807,7 @@ class AsyncTradingService:
         self,
         account_no: str,
         symbol: str,
-        price: int | float,
+        price: PriceLike,
     ) -> MaxBuySellResponse:
         """Get the maximum buy/sell quantities for a symbol at a given price.
 
@@ -514,8 +815,10 @@ class AsyncTradingService:
             account_no: Trading account number.
             symbol: Ticker symbol, e.g. "VNM".
             price: Reference price in VND used for the calculation.
+
         Returns:
             The maximum buy/sell quantities response from the server.
+
         Raises:
             ValidationError: If a required field is missing or the price is not positive.
             APIError: If the server rejects the request.
@@ -534,8 +837,10 @@ class AsyncTradingService:
         Args:
             account_no: Trading account number.
             symbol: Ticker symbol, e.g. "VNM".
+
         Returns:
             The maximum buy/sell quantities response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -547,11 +852,11 @@ class AsyncTradingService:
         self,
         account_no: str,
         fco_id: str | None = None,
-        type: str | None = None,
-        process_status: str | None = None,
+        type: FCOTypeLike | None = None,
+        process_status: FCOStatusLike | list[FCOStatusLike] | None = None,
 
         symbol: str | None = None,
-        side: str | None = None,
+        side: OrderSide | str | None = None,
         from_date: str | None = None,
         to_date: str | None = None,
         page_index: int | None = None,
@@ -579,7 +884,22 @@ class AsyncTradingService:
         page_index: int | None = None,
         page_size: int | None = None,
     ) -> FCOListResponse:
-        """Get all FCO orders for a trading account."""
+        """Get all FCO orders for a trading account.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            page_index: 1-based page number (server default 1).
+            page_size: Rows per page (server default 10).
+
+        Returns:
+            A paginated ``FCOListResponse`` (iterable of ``FCOInfo``; see ``pages_count`` and
+            ``items_count``).
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         return await self._get_fco_list(
             account_no=account_no,
             page_index=page_index,
@@ -593,7 +913,24 @@ class AsyncTradingService:
         page_index: int | None = None,
         page_size: int | None = None,
     ) -> FCOListResponse:
-        """Get FCO orders filtered by stock or derivative symbol."""
+        """Get FCO orders filtered by stock or derivative symbol.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            page_index: 1-based page number (server default 1).
+            page_size: Rows per page (server default 10).
+
+        Returns:
+            A paginated ``FCOListResponse`` (iterable of ``FCOInfo``; see ``pages_count`` and
+            ``items_count``).
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         return await self._get_fco_list(
             account_no=account_no,
             symbol=symbol,
@@ -604,11 +941,28 @@ class AsyncTradingService:
     async def get_fco_by_status(
         self,
         account_no: str,
-        process_status: str,
+        process_status: FCOStatusLike | list[FCOStatusLike],
         page_index: int | None = None,
         page_size: int | None = None,
     ) -> FCOListResponse:
-        """Get FCO orders filtered by processing status."""
+        """Get FCO orders filtered by processing status.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            process_status: FCO status to filter by: an ``FCOStatus`` member or its string
+                            (``"WAIT"``, ``"TRI"``, ...); pass a list to match several.
+            page_index: 1-based page number (server default 1).
+            page_size: Rows per page (server default 10).
+
+        Returns:
+            A paginated ``FCOListResponse`` (iterable of ``FCOInfo``; see ``pages_count`` and
+            ``items_count``).
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         return await self._get_fco_list(
             account_no=account_no,
             process_status=process_status,
@@ -624,7 +978,25 @@ class AsyncTradingService:
         page_index: int | None = None,
         page_size: int | None = None,
     ) -> FCOListResponse:
-        """Get FCO orders filtered by date range."""
+        """Get FCO orders filtered by date range.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            from_date: Start of the date filter, ``"YYYY/MM/DD HH:MM:SS"`` (a bare date is
+                       accepted).
+            to_date: End of the date filter, same format; must not precede ``from_date``.
+            page_index: 1-based page number (server default 1).
+            page_size: Rows per page (server default 10).
+
+        Returns:
+            A paginated ``FCOListResponse`` (iterable of ``FCOInfo``; see ``pages_count`` and
+            ``items_count``).
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         return await self._get_fco_list(
             account_no=account_no,
             from_date=from_date,
@@ -638,7 +1010,20 @@ class AsyncTradingService:
         account_no: str,
         fco_id: str,
     ) -> FCOInfo | None:
-        """Get a single FCO order by FCO ID."""
+        """Get a single FCO order by FCO ID.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            fco_id: Id of the conditional order, as returned by ``place_fco_*``.
+
+        Returns:
+            The ``FCOInfo``, or ``None`` when no such FCO exists for the account.
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         response = await self._get_fco_list(
             account_no=account_no,
             fco_id=fco_id,
@@ -657,8 +1042,13 @@ class AsyncTradingService:
             fco_id: FCO order ID.
             page_index: Page number index, starting from 1. Default is 1 (optional).
             page_size: Number of records per page. Default is 10 (optional).
+
         Returns:
             FCOOrderBookResponse containing the paginated FCO order book entries.
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
         """
         require_non_empty(fco_id, "fcoId")
         params = FCOOrderBookRequest(
@@ -669,12 +1059,30 @@ class AsyncTradingService:
         data = await self._rest.get(EP_TRADING_FCO_ORDER_BOOK, params=params)
         return FCOOrderBookResponse.from_dict(data)
 
+    async def get_fco_status_history(self, fco_id: str) -> list[FCOStatusHistoryItem]:
+        """Get the status transitions of a conditional (FCO) order.
+
+        Args:
+            fco_id: Id of the FCO.
+
+        Returns:
+            The recorded transitions (state, time, code, detail); empty when there are none.
+
+        Raises:
+            ValidationError: If ``fco_id`` is empty.
+            APIError: If the server rejects the request.
+        """
+        require_non_empty(fco_id, "fcoId")
+        params = FCOStatusHistoryRequest(fco_id=fco_id).to_dict()
+        data = await self._rest.get(EP_TRADING_FCO_STATUS_HISTORY, params=params)
+        return FCOStatusHistoryItem.from_response(data)
+
     async def _place_fco(
         self,
         params: GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams,
     ) -> FCOPlaceResponse:
         """Place a conditional (FCO) order."""
-        _params = _build_fco_params(params)
+        _params = _build_fco_params(params, self._rest.config)
         content, sig = _sign_and_encode(_params, self._rest.get_private_key())
         data = await self._rest.post(
             EP_TRADING_FCO_ORDER,
@@ -689,12 +1097,40 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: float | OrderType,
-        price_slip: float,
+        price: PriceLike | OrderType,
+        price_slip: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a GTD order."""
+        """Place a GTD order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            price: Order price in VND as a number or decimal string (``Decimal`` is fine). Pass
+                   an ``OrderType`` (``MP``, ``MTL``, ...) for a market-priced leg; the slip is
+                   then ignored.
+            price_slip: Slippage in VND allowed on top of the price when the order is sent.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         if isinstance(price, OrderType):
             price = price.value
             price_slip = 0
@@ -707,6 +1143,7 @@ class AsyncTradingService:
             price_slip=price_slip,
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return await self._place_fco(params)
 
@@ -716,12 +1153,39 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        stop_price: int | float,
-        operator: FCOOperator,
+        stop_price: NumberLike,
+        operator: FCOOperatorLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a stop order."""
+        """Place a stop order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            stop_price: Trigger price of the stop, in VND.
+            operator: Comparison that fires the trigger, e.g. ``FCOOperator.GREATER_OR_EQUAL``
+                      (fires when price >= ``stop_price``) or ``FCOOperator.LESSER_OR_EQUAL``.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = StopParams(
             account_no=account_no,
             symbol=symbol,
@@ -730,9 +1194,10 @@ class AsyncTradingService:
             price_slip=0,
             quantity=quantity,
             stop_price=stop_price,
-            operator=operator,
+            operator=_operator(operator),
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return await self._place_fco(params)
 
@@ -742,14 +1207,45 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: int | float,
-        price_slip: float,
-        stop_price: int | float,
-        operator: FCOOperator,
+        price: PriceLike,
+        price_slip: NumberLike,
+        stop_price: NumberLike,
+        operator: FCOOperatorLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a stop limit order."""
+        """Place a stop limit order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            price: Order price in VND as a number or decimal string (``Decimal`` is fine). Pass
+                   an ``OrderType`` (``MP``, ``MTL``, ...) for a market-priced leg; the slip is
+                   then ignored.
+            price_slip: Slippage in VND allowed on top of the price when the order is sent.
+            stop_price: Trigger price of the stop, in VND.
+            operator: Comparison that fires the trigger, e.g. ``FCOOperator.GREATER_OR_EQUAL``
+                      (fires when price >= ``stop_price``) or ``FCOOperator.LESSER_OR_EQUAL``.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = StopParams(
             account_no=account_no,
             fco_type=FCOType.STOP_LIMIT,
@@ -759,9 +1255,10 @@ class AsyncTradingService:
             price_slip=price_slip,
             quantity=quantity,
             stop_price=stop_price,
-            operator=operator,
+            operator=_operator(operator),
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return await self._place_fco(params)
 
@@ -771,12 +1268,39 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        active_price: int | float,
-        trailing_amount: int | float,
+        active_price: NumberLike,
+        trailing_amount: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a trailing stop order."""
+        """Place a trailing stop order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            active_price: Price at which the trailing stop becomes active, in VND.
+            trailing_amount: Distance in VND the price must retrace from its best level to fire
+                             the stop.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = TrailingStopParams(
             account_no=account_no,
             symbol=symbol,
@@ -786,6 +1310,7 @@ class AsyncTradingService:
             quantity=quantity,
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return await self._place_fco(params)
 
@@ -795,13 +1320,41 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        active_price: int | float,
-        trailing_amount: int | float,
-        price_slip: int | float,
+        active_price: NumberLike,
+        trailing_amount: NumberLike,
+        price_slip: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a trailing stop limit order."""
+        """Place a trailing stop limit order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            active_price: Price at which the trailing stop becomes active, in VND.
+            trailing_amount: Distance in VND the price must retrace from its best level to fire
+                             the stop.
+            price_slip: Slippage in VND allowed on top of the price when the order is sent.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = TrailingStopParams(
             account_no=account_no,
             fco_type=FCOType.TRAILING_STOP_LIMIT,
@@ -813,6 +1366,7 @@ class AsyncTradingService:
             quantity=quantity,
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return await self._place_fco(params)
 
@@ -822,16 +1376,46 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        tp_active_price: int | float,
-        sl_active_price: int | float,
-        tp_price: int | float | OrderType,
-        sl_price: int | float | OrderType,
-        tp_slip: int | float,
-        sl_slip: int | float,
+        tp_active_price: NumberLike,
+        sl_active_price: NumberLike,
+        tp_price: PriceLike | OrderType,
+        sl_price: PriceLike | OrderType,
+        tp_slip: NumberLike,
+        sl_slip: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place an OCO order."""
+        """Place an OCO order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            tp_active_price: Take-profit trigger price, in VND.
+            sl_active_price: Stop-loss trigger price, in VND.
+            tp_price: Order price once take-profit fires: a number, or an ``OrderType`` word.
+            sl_price: Order price once stop-loss fires: a number, or an ``OrderType`` word.
+            tp_slip: Slippage in VND allowed on the take-profit order.
+            sl_slip: Slippage in VND allowed on the stop-loss order.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = OCOParams(
             account_no=account_no,
             symbol=symbol,
@@ -845,6 +1429,7 @@ class AsyncTradingService:
             sl_slip=sl_slip,
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return await self._place_fco(params)
 
@@ -854,18 +1439,52 @@ class AsyncTradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: int | float,
-        price_slip: int | float,
-        tp_active_price: int | float,
-        sl_active_price: int | float,
-        tp_price: int | float | OrderType,
-        sl_price: int | float | OrderType,
-        tp_slip: int | float,
-        sl_slip: int | float,
+        price: PriceLike,
+        price_slip: NumberLike,
+        tp_active_price: NumberLike,
+        sl_active_price: NumberLike,
+        tp_price: PriceLike | OrderType,
+        sl_price: PriceLike | OrderType,
+        tp_slip: NumberLike,
+        sl_slip: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a Bull Bear order."""
+        """Place a Bull Bear order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            price: Order price in VND as a number or decimal string (``Decimal`` is fine). Pass
+                   an ``OrderType`` (``MP``, ``MTL``, ...) for a market-priced leg; the slip is
+                   then ignored.
+            price_slip: Slippage in VND allowed on top of the price when the order is sent.
+            tp_active_price: Take-profit trigger price, in VND.
+            sl_active_price: Stop-loss trigger price, in VND.
+            tp_price: Order price once take-profit fires: a number, or an ``OrderType`` word.
+            sl_price: Order price once stop-loss fires: a number, or an ``OrderType`` word.
+            tp_slip: Slippage in VND allowed on the take-profit order.
+            sl_slip: Slippage in VND allowed on the stop-loss order.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = BullBearParams(
             account_no=account_no,
             symbol=symbol,
@@ -881,12 +1500,33 @@ class AsyncTradingService:
             sl_slip=sl_slip,
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return await self._place_fco(params)
 
-    async def cancel_fco(self, fco_id: str) -> FCOCancelResponse:
-        """Cancel a FCO."""
-        params = FCOCancelRequest(fco_id=fco_id)
+    async def cancel_fco(self, fco_id: str, code: str | None = None) -> FCOCancelResponse:
+        """Cancel a FCO.
+
+        Args:
+            fco_id: Id of the conditional order to cancel.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            The cancelled FCO id.
+
+        Raises:
+            ValidationError: If ``fco_id`` is empty.
+            APIError: If the server rejects the request.
+        """
+        require_non_empty(fco_id, "fcoId")
+        config = self._rest.config
+        params = FCOCancelRequest(
+            fco_id=fco_id,
+            device_id=get_device_id(),
+            user_agent=config.user_agent,
+            code=code,
+        )
         content, sig = _sign_and_encode(params, self._rest.get_private_key())
         data = await self._rest.delete(
             EP_TRADING_FCO_ORDER,
@@ -910,11 +1550,21 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: float,
+        price: PriceLike,
         order_type: OrderType,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Build, sign, and POST a place-order request, returning the parsed response."""
-        req = _build_place_order(account_no, symbol, side, quantity, price, order_type)
+        req = _build_place_order(
+            account_no,
+            symbol,
+            side,
+            quantity,
+            price,
+            order_type,
+            self._rest.config,
+            client_request_id,
+        )
         content, sig = _sign_and_encode(req, self._rest.get_private_key())
         data = self._rest.post(
             EP_TRADING_ORDER,
@@ -929,8 +1579,9 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: float,
+        price: PriceLike,
         order_type: OrderType,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place a new order of any order type.
 
@@ -941,15 +1592,24 @@ class TradingService:
             quantity: Number of shares to order.
             price: Order price in VND (0 for non-priced order types).
             order_type: Order type (LO, MTL, ATO, ATC, ...).
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing or the price is negative.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
-        require_non_negative(price, "price")
-        return self._place_order(account_no, symbol, side, quantity, price, order_type)
+        if price is not None:
+            require_non_negative(to_price_decimal(price), "price")
+        return self._place_order(
+            account_no, symbol, side, quantity, price, order_type, client_request_id
+        )
 
     def place_limit_order(
         self,
@@ -957,7 +1617,8 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: float,
+        price: PriceLike,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place a limit (LO) order at a specified price.
 
@@ -967,15 +1628,23 @@ class TradingService:
             side: Order side (BUY or SELL).
             quantity: Number of shares to order.
             price: Limit price in VND.
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing or the price is not positive.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
-        require_positive(price, "price")
-        return self.place_order(account_no, symbol, side, quantity, price, OrderType.LO)
+        require_positive(to_price_decimal(price), "price")
+        return self.place_order(
+            account_no, symbol, side, quantity, price, OrderType.LO, client_request_id
+        )
 
     def place_market_order(
         self,
@@ -983,6 +1652,7 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place a market (MTL) order to execute at the best available price.
 
@@ -991,15 +1661,27 @@ class TradingService:
             symbol: Ticker symbol, e.g. "VNM".
             side: Order side (BUY or SELL).
             quantity: Number of shares to order.
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
         return self.place_order(
-            account_no, symbol, side, quantity, price=0, order_type=OrderType.MTL
+            account_no,
+            symbol,
+            side,
+            quantity,
+            price=0,
+            order_type=OrderType.MTL,
+            client_request_id=client_request_id,
         )
 
     def place_ato_order(
@@ -1008,6 +1690,7 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place an at-the-open (ATO) order matched at the opening auction price.
 
@@ -1016,15 +1699,27 @@ class TradingService:
             symbol: Ticker symbol, e.g. "VNM".
             side: Order side (BUY or SELL).
             quantity: Number of shares to order.
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
         return self.place_order(
-            account_no, symbol, side, quantity, price=0, order_type=OrderType.ATO
+            account_no,
+            symbol,
+            side,
+            quantity,
+            price=0,
+            order_type=OrderType.ATO,
+            client_request_id=client_request_id,
         )
 
     def place_atc_order(
@@ -1033,6 +1728,7 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
+        client_request_id: str | None = None,
     ) -> PlaceOrderResponse:
         """Place an at-the-close (ATC) order matched at the closing auction price.
 
@@ -1041,15 +1737,27 @@ class TradingService:
             symbol: Ticker symbol, e.g. "VNM".
             side: Order side (BUY or SELL).
             quantity: Number of shares to order.
+            client_request_id: Optional idempotency key (<= 20 chars). Omit it to have the SDK
+                               generate one. Re-sending a used key within the day is rejected
+                               with ``DuplicateRequestError`` (HTTP 409); the SDK never retries
+                               an order itself.
+
         Returns:
             The placed order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
         return self.place_order(
-            account_no, symbol, side, quantity, price=0, order_type=OrderType.ATC
+            account_no,
+            symbol,
+            side,
+            quantity,
+            price=0,
+            order_type=OrderType.ATC,
+            client_request_id=client_request_id,
         )
 
     def _modify_order(
@@ -1057,11 +1765,13 @@ class TradingService:
         account_no: str,
         order_id: str | None = None,
         client_request_id: str | None = None,
-        price: float | None = None,
+        price: PriceLike | None = None,
         quantity: int | None = None,
     ) -> ModifyOrderResponse:
         """Build, sign, and PUT a modify-order request, returning the parsed response."""
-        req = _build_modify_order(account_no, order_id, client_request_id, price, quantity)
+        req = _build_modify_order(
+            account_no, order_id, client_request_id, price, quantity, self._rest.config
+        )
         content, sig = _sign_and_encode(req, self._rest.get_private_key())
         data = self._rest.put(
             EP_TRADING_ORDER,
@@ -1074,7 +1784,7 @@ class TradingService:
         self,
         account_no: str,
         client_request_id: str,
-        price: float,
+        price: PriceLike,
     ) -> ModifyOrderResponse:
         """Modify the price of an existing order identified by client request ID.
 
@@ -1082,14 +1792,16 @@ class TradingService:
             account_no: Trading account number.
             client_request_id: Caller-assigned order id used to locate the order.
             price: New order price in VND.
+
         Returns:
             The modify order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
-        require_non_empty(price, "price")
+        require_positive(to_price_decimal(price), "price")
         return self._modify_order(
             account_no=account_no, client_request_id=client_request_id, price=price
         )
@@ -1098,7 +1810,7 @@ class TradingService:
         self,
         account_no: str,
         order_id: str,
-        price: float,
+        price: PriceLike,
     ) -> ModifyOrderResponse:
         """Modify the price of an existing order identified by server order ID.
 
@@ -1106,14 +1818,16 @@ class TradingService:
             account_no: Trading account number.
             order_id: Server-assigned order id used to locate the order.
             price: New order price in VND.
+
         Returns:
             The modify order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
             AuthenticationError: If signing or authentication fails.
         """
-        require_non_empty(price, "price")
+        require_positive(to_price_decimal(price), "price")
         return self._modify_order(account_no=account_no, order_id=order_id, price=price)
 
     def modify_order_quantity(
@@ -1128,8 +1842,10 @@ class TradingService:
             account_no: Trading account number.
             client_request_id: Caller-assigned order id used to locate the order.
             quantity: New number of shares.
+
         Returns:
             The modify order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -1152,8 +1868,10 @@ class TradingService:
             account_no: Trading account number.
             order_id: Server-assigned order id used to locate the order.
             quantity: New number of shares.
+
         Returns:
             The modify order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -1169,7 +1887,7 @@ class TradingService:
         client_request_id: str | None = None,
     ) -> CancelOrderResponse:
         """Build, sign, and DELETE a cancel-order request, returning the parsed response."""
-        req = _build_cancel_order(account_no, order_id, client_request_id)
+        req = _build_cancel_order(account_no, order_id, client_request_id, self._rest.config)
         content, sig = _sign_and_encode(req, self._rest.get_private_key())
         data = self._rest.delete(
             EP_TRADING_ORDER,
@@ -1184,8 +1902,10 @@ class TradingService:
         Args:
             account_no: Trading account number.
             client_request_id: Caller-assigned order id used to locate the order.
+
         Returns:
             The cancel order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -1200,8 +1920,10 @@ class TradingService:
         Args:
             account_no: Trading account number.
             order_id: Server-assigned order id used to locate the order.
+
         Returns:
             The cancel order response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -1210,11 +1932,65 @@ class TradingService:
         require_non_empty(order_id, "orderId")
         return self._cancel_order(account_no=account_no, order_id=order_id)
 
+    def place_batch_orders(self, orders: list[BatchPlaceOrderItem]) -> BatchOrderResponse:
+        """Place a batch of orders in one signed request (``POST /order/batch``).
+
+        At most ``Config.max_batch_orders`` orders (the server's default is 20).
+
+        All orders are validated first and the server accepts or rejects the batch as a whole.
+        ``batchRequestId`` is random and ``batchRequestTime`` is the current time; the request
+        is signed over the whole body and never retried.
+
+        Args:
+            orders: One dict per order with the ``place_order`` arguments (``account_no``,
+                    ``symbol``, ``side``, ``quantity``, ``price``, ``order_type`` and optionally
+                    ``client_request_id``).
+
+        Returns:
+            ``results`` with one entry per order (``client_request_id``, ``order_id``,
+            ``status``, ``success``, ``error_code``, ``error_message``).
+
+        Raises:
+            ValidationError: Empty batch, over ``Config.max_batch_orders`` orders, or a bad order.
+            DuplicateRequestError: The batch id was already used today (HTTP 409).
+            APIError: The server rejects the request (e.g. 400111, time outside the window).
+        """
+        request = _build_batch_place(orders, self._rest.config)
+        content, sig = _sign_and_encode(request, self._rest.get_private_key())
+        data = self._rest.post(
+            EP_TRADING_ORDER_BATCH, content=content, headers={HEADER_SIGNATURE: sig}
+        )
+        return BatchOrderResponse.from_dict(data)
+
+    def cancel_batch_orders(self, orders: list[BatchCancelOrderItem]) -> BatchOrderResponse:
+        """Cancel a batch of orders in one signed request (``DELETE /order/batch``).
+
+        At most ``Config.max_batch_orders`` orders (the server's default is 20).
+
+        Args:
+            orders: One dict per order: ``account_no`` and exactly one of ``order_id`` /
+                    ``client_request_id``.
+
+        Returns:
+            ``results`` as for :meth:`place_batch_orders`, plus ``client_cancel_id`` per order.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+        """
+        request = _build_batch_cancel(orders, self._rest.config)
+        content, sig = _sign_and_encode(request, self._rest.get_private_key())
+        data = self._rest.delete(
+            EP_TRADING_ORDER_BATCH, content=content, headers={HEADER_SIGNATURE: sig}
+        )
+        return BatchOrderResponse.from_dict(data)
+
     def _get_max_buy_sell(
         self,
         account_no: str,
         symbol: str,
-        price: int | float | None = None,
+        price: PriceLike | None = None,
     ) -> MaxBuySellResponse:
         """Build params and GET the max-buy/sell quantities, returning the parsed response."""
         params = _build_max_buy_sell(account_no, symbol, price)
@@ -1228,7 +2004,7 @@ class TradingService:
         self,
         account_no: str,
         symbol: str,
-        price: int | float,
+        price: PriceLike,
     ) -> MaxBuySellResponse:
         """Get the maximum buy/sell quantities for a symbol at a given price.
 
@@ -1236,8 +2012,10 @@ class TradingService:
             account_no: Trading account number.
             symbol: Ticker symbol, e.g. "VNM".
             price: Reference price in VND used for the calculation.
+
         Returns:
             The maximum buy/sell quantities response from the server.
+
         Raises:
             ValidationError: If a required field is missing or the price is not positive.
             APIError: If the server rejects the request.
@@ -1256,8 +2034,10 @@ class TradingService:
         Args:
             account_no: Trading account number.
             symbol: Ticker symbol, e.g. "VNM".
+
         Returns:
             The maximum buy/sell quantities response from the server.
+
         Raises:
             ValidationError: If a required field is missing.
             APIError: If the server rejects the request.
@@ -1269,10 +2049,10 @@ class TradingService:
         self,
         account_no: str,
         fco_id: str | None = None,
-        type: str | None = None,
-        process_status: str | None = None,
+        type: FCOTypeLike | None = None,
+        process_status: FCOStatusLike | list[FCOStatusLike] | None = None,
         symbol: str | None = None,
-        side: str | None = None,
+        side: OrderSide | str | None = None,
         from_date: str | None = None,
         to_date: str | None = None,
         page_index: int | None = None,
@@ -1315,7 +2095,22 @@ class TradingService:
         page_index: int | None = None,
         page_size: int | None = None,
     ) -> FCOListResponse:
-        """Get all FCO orders for a trading account."""
+        """Get all FCO orders for a trading account.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            page_index: 1-based page number (server default 1).
+            page_size: Rows per page (server default 10).
+
+        Returns:
+            A paginated ``FCOListResponse`` (iterable of ``FCOInfo``; see ``pages_count`` and
+            ``items_count``).
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         return self._get_fco_list(
             account_no=account_no,
             page_index=page_index,
@@ -1329,7 +2124,24 @@ class TradingService:
         page_index: int | None = None,
         page_size: int | None = None,
     ) -> FCOListResponse:
-        """Get FCO orders filtered by stock or derivative symbol."""
+        """Get FCO orders filtered by stock or derivative symbol.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            page_index: 1-based page number (server default 1).
+            page_size: Rows per page (server default 10).
+
+        Returns:
+            A paginated ``FCOListResponse`` (iterable of ``FCOInfo``; see ``pages_count`` and
+            ``items_count``).
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         return self._get_fco_list(
             account_no=account_no,
             symbol=symbol,
@@ -1340,11 +2152,28 @@ class TradingService:
     def get_fco_by_status(
         self,
         account_no: str,
-        process_status: str,
+        process_status: FCOStatusLike | list[FCOStatusLike],
         page_index: int | None = None,
         page_size: int | None = None,
     ) -> FCOListResponse:
-        """Get FCO orders filtered by processing status."""
+        """Get FCO orders filtered by processing status.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            process_status: FCO status to filter by: an ``FCOStatus`` member or its string
+                            (``"WAIT"``, ``"TRI"``, ...); pass a list to match several.
+            page_index: 1-based page number (server default 1).
+            page_size: Rows per page (server default 10).
+
+        Returns:
+            A paginated ``FCOListResponse`` (iterable of ``FCOInfo``; see ``pages_count`` and
+            ``items_count``).
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         return self._get_fco_list(
             account_no=account_no,
             process_status=process_status,
@@ -1360,7 +2189,25 @@ class TradingService:
         page_index: int | None = None,
         page_size: int | None = None,
     ) -> FCOListResponse:
-        """Get FCO orders filtered by date range."""
+        """Get FCO orders filtered by date range.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            from_date: Start of the date filter, ``"YYYY/MM/DD HH:MM:SS"`` (a bare date is
+                       accepted).
+            to_date: End of the date filter, same format; must not precede ``from_date``.
+            page_index: 1-based page number (server default 1).
+            page_size: Rows per page (server default 10).
+
+        Returns:
+            A paginated ``FCOListResponse`` (iterable of ``FCOInfo``; see ``pages_count`` and
+            ``items_count``).
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         return self._get_fco_list(
             account_no=account_no,
             from_date=from_date,
@@ -1374,7 +2221,20 @@ class TradingService:
         account_no: str,
         fco_id: str,
     ) -> FCOInfo | None:
-        """Get a single FCO order by FCO ID."""
+        """Get a single FCO order by FCO ID.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            fco_id: Id of the conditional order, as returned by ``place_fco_*``.
+
+        Returns:
+            The ``FCOInfo``, or ``None`` when no such FCO exists for the account.
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
+        """
         response = self._get_fco_list(
             account_no=account_no,
             fco_id=fco_id,
@@ -1393,8 +2253,13 @@ class TradingService:
             fco_id: FCO order ID.
             page_index: Page number index, starting from 1. Default is 1 (optional).
             page_size: Number of records per page. Default is 10 (optional).
+
         Returns:
             FCOOrderBookResponse containing the paginated FCO order book entries.
+
+        Raises:
+            ValidationError: A filter is invalid (nothing is sent).
+            APIError: The server rejects the request.
         """
         require_non_empty(fco_id, "fcoId")
         params = FCOOrderBookRequest(
@@ -1405,12 +2270,30 @@ class TradingService:
         data = self._rest.get(EP_TRADING_FCO_ORDER_BOOK, params=params)
         return FCOOrderBookResponse.from_dict(data)
 
+    def get_fco_status_history(self, fco_id: str) -> list[FCOStatusHistoryItem]:
+        """Get the status transitions of a conditional (FCO) order.
+
+        Args:
+            fco_id: Id of the FCO.
+
+        Returns:
+            The recorded transitions (state, time, code, detail); empty when there are none.
+
+        Raises:
+            ValidationError: If ``fco_id`` is empty.
+            APIError: If the server rejects the request.
+        """
+        require_non_empty(fco_id, "fcoId")
+        params = FCOStatusHistoryRequest(fco_id=fco_id).to_dict()
+        data = self._rest.get(EP_TRADING_FCO_STATUS_HISTORY, params=params)
+        return FCOStatusHistoryItem.from_response(data)
+
     def _place_fco(
         self,
         params: GTDParams | StopParams | TrailingStopParams | OCOParams | BullBearParams,
     ) -> FCOPlaceResponse:
         """Place a conditional (FCO) order."""
-        _params = _build_fco_params(params)
+        _params = _build_fco_params(params, self._rest.config)
         content, sig = _sign_and_encode(_params, self._rest.get_private_key())
         data = self._rest.post(
             EP_TRADING_FCO_ORDER,
@@ -1425,12 +2308,40 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: float | OrderType,
-        price_slip: float,
+        price: PriceLike | OrderType,
+        price_slip: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a GTD order."""
+        """Place a GTD order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            price: Order price in VND as a number or decimal string (``Decimal`` is fine). Pass
+                   an ``OrderType`` (``MP``, ``MTL``, ...) for a market-priced leg; the slip is
+                   then ignored.
+            price_slip: Slippage in VND allowed on top of the price when the order is sent.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         if isinstance(price, OrderType):
             price = price.value
             price_slip = 0
@@ -1443,21 +2354,49 @@ class TradingService:
             price_slip=price_slip,
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return self._place_fco(params)
-    
+
     def place_fco_stop(
-        self,    
+        self,
         account_no: str,
         symbol: str,
         side: OrderSide,
         quantity: int,
-        stop_price: int | float,
-        operator: FCOOperator,
+        stop_price: NumberLike,
+        operator: FCOOperatorLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a stop order."""
+        """Place a stop order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            stop_price: Trigger price of the stop, in VND.
+            operator: Comparison that fires the trigger, e.g. ``FCOOperator.GREATER_OR_EQUAL``
+                      (fires when price >= ``stop_price``) or ``FCOOperator.LESSER_OR_EQUAL``.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = StopParams(
             account_no=account_no,
             symbol=symbol,
@@ -1466,26 +2405,58 @@ class TradingService:
             price_slip=0,
             quantity=quantity,
             stop_price=stop_price,
-            operator=operator,
+            operator=_operator(operator),
             from_date=from_date,
-            to_date=to_date
+            to_date=to_date,
+            code=code,
         )
         return self._place_fco(params)
 
     def place_fco_stop_limit(
-        self,    
+        self,
         account_no: str,
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: int | float,
-        price_slip: float,
-        stop_price: int | float,
-        operator: FCOOperator,
+        price: PriceLike,
+        price_slip: NumberLike,
+        stop_price: NumberLike,
+        operator: FCOOperatorLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a stop order."""
+        """Place a stop order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            price: Order price in VND as a number or decimal string (``Decimal`` is fine). Pass
+                   an ``OrderType`` (``MP``, ``MTL``, ...) for a market-priced leg; the slip is
+                   then ignored.
+            price_slip: Slippage in VND allowed on top of the price when the order is sent.
+            stop_price: Trigger price of the stop, in VND.
+            operator: Comparison that fires the trigger, e.g. ``FCOOperator.GREATER_OR_EQUAL``
+                      (fires when price >= ``stop_price``) or ``FCOOperator.LESSER_OR_EQUAL``.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = StopParams(
             account_no=account_no,
             fco_type=FCOType.STOP_LIMIT,
@@ -1495,24 +2466,52 @@ class TradingService:
             price_slip=price_slip,
             quantity=quantity,
             stop_price=stop_price,
-            operator=operator,
+            operator=_operator(operator),
             from_date=from_date,
-            to_date=to_date
+            to_date=to_date,
+            code=code,
         )
         return self._place_fco(params)
 
     def place_fco_trailing_stop(
-        self,    
+        self,
         account_no: str,
         symbol: str,
         side: OrderSide,
         quantity: int,
-        active_price: int | float,
-        trailing_amount: int | float,
+        active_price: NumberLike,
+        trailing_amount: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a stop order."""
+        """Place a stop order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            active_price: Price at which the trailing stop becomes active, in VND.
+            trailing_amount: Distance in VND the price must retrace from its best level to fire
+                             the stop.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = TrailingStopParams(
             account_no=account_no,
             symbol=symbol,
@@ -1521,23 +2520,52 @@ class TradingService:
             trailing_amount=trailing_amount,
             quantity=quantity,
             from_date=from_date,
-            to_date=to_date
+            to_date=to_date,
+            code=code,
         )
         return self._place_fco(params)
 
     def place_fco_trailing_stop_limit(
-        self,    
+        self,
         account_no: str,
         symbol: str,
         side: OrderSide,
         quantity: int,
-        active_price: int | float,
-        trailing_amount: int | float,
-        price_slip: int | float,
+        active_price: NumberLike,
+        trailing_amount: NumberLike,
+        price_slip: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a stop order."""
+        """Place a stop order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            active_price: Price at which the trailing stop becomes active, in VND.
+            trailing_amount: Distance in VND the price must retrace from its best level to fire
+                             the stop.
+            price_slip: Slippage in VND allowed on top of the price when the order is sent.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = TrailingStopParams(
             account_no=account_no,
             fco_type=FCOType.TRAILING_STOP_LIMIT,
@@ -1548,7 +2576,8 @@ class TradingService:
             price_slip=price_slip,
             quantity=quantity,
             from_date=from_date,
-            to_date=to_date
+            to_date=to_date,
+            code=code,
         )
         return self._place_fco(params)
 
@@ -1558,16 +2587,46 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        tp_active_price: int | float,
-        sl_active_price: int | float,
-        tp_price: int | float | OrderType,
-        sl_price: int | float | OrderType,
-        tp_slip: int | float,
-        sl_slip: int | float,
+        tp_active_price: NumberLike,
+        sl_active_price: NumberLike,
+        tp_price: PriceLike | OrderType,
+        sl_price: PriceLike | OrderType,
+        tp_slip: NumberLike,
+        sl_slip: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
-        """Place a OCO order."""
+        """Place a OCO order.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            tp_active_price: Take-profit trigger price, in VND.
+            sl_active_price: Stop-loss trigger price, in VND.
+            tp_price: Order price once take-profit fires: a number, or an ``OrderType`` word.
+            sl_price: Order price once stop-loss fires: a number, or an ``OrderType`` word.
+            tp_slip: Slippage in VND allowed on the take-profit order.
+            sl_slip: Slippage in VND allowed on the stop-loss order.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = OCOParams(
             account_no=account_no,
             symbol=symbol,
@@ -1581,6 +2640,7 @@ class TradingService:
             sl_slip=sl_slip,
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return self._place_fco(params)
 
@@ -1590,17 +2650,52 @@ class TradingService:
         symbol: str,
         side: OrderSide,
         quantity: int,
-        price: int | float,
-        price_slip: int | float,
-        tp_active_price: int | float,
-        sl_active_price: int | float,
-        tp_price: int | float | OrderType,
-        sl_price: int | float | OrderType,
-        tp_slip: int | float,
-        sl_slip: int | float,
+        price: PriceLike,
+        price_slip: NumberLike,
+        tp_active_price: NumberLike,
+        sl_active_price: NumberLike,
+        tp_price: PriceLike | OrderType,
+        sl_price: PriceLike | OrderType,
+        tp_slip: NumberLike,
+        sl_slip: NumberLike,
         from_date: str,
         to_date: str,
+        code: str | None = None,
     ) -> FCOPlaceResponse:
+        """Place fco bull bear.
+
+        Args:
+            account_no: Trading account number, e.g. ``"1234561"`` (derivative accounts end in
+                        ``8``).
+            symbol: Ticker symbol, e.g. ``"SSI"``, or a derivative contract such as
+                    ``"VN30F2606"``.
+            side: ``OrderSide.BUY`` or ``OrderSide.SELL``.
+            quantity: Number of shares/contracts; a positive integer.
+            price: Order price in VND as a number or decimal string (``Decimal`` is fine). Pass
+                   an ``OrderType`` (``MP``, ``MTL``, ...) for a market-priced leg; the slip is
+                   then ignored.
+            price_slip: Slippage in VND allowed on top of the price when the order is sent.
+            tp_active_price: Take-profit trigger price, in VND.
+            sl_active_price: Stop-loss trigger price, in VND.
+            tp_price: Order price once take-profit fires: a number, or an ``OrderType`` word.
+            sl_price: Order price once stop-loss fires: a number, or an ``OrderType`` word.
+            tp_slip: Slippage in VND allowed on the take-profit order.
+            sl_slip: Slippage in VND allowed on the stop-loss order.
+            from_date: Start of the validity window, ``"YYYY/MM/DD HH:MM:SS"``.
+            to_date: End of the validity window, ``"YYYY/MM/DD HH:MM:SS"``; at most 31 days
+                     after ``from_date``.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            ``FCOPlaceResponse`` carrying the new ``fco_id``.
+
+        Raises:
+            ValidationError: A field is missing/invalid, or ``Config.private_key`` is not set
+                (nothing is sent).
+            APIError: The server rejects the request.
+            DuplicateRequestError: The id was already used (HTTP 409).
+        """
         params = BullBearParams(
             account_no=account_no,
             symbol=symbol,
@@ -1616,12 +2711,33 @@ class TradingService:
             sl_slip=sl_slip,
             from_date=from_date,
             to_date=to_date,
+            code=code,
         )
         return self._place_fco(params)
 
-    def cancel_fco(self, fco_id: str) -> FCOCancelResponse:
-        """Cancel a FCO."""
-        params = FCOCancelRequest(fco_id=fco_id)
+    def cancel_fco(self, fco_id: str, code: str | None = None) -> FCOCancelResponse:
+        """Cancel a FCO.
+
+        Args:
+            fco_id: Id of the conditional order to cancel.
+            code: One-time code (OTP) when the account requires one for conditional orders;
+                  omitted when empty.
+
+        Returns:
+            The cancelled FCO id.
+
+        Raises:
+            ValidationError: If ``fco_id`` is empty.
+            APIError: If the server rejects the request.
+        """
+        require_non_empty(fco_id, "fcoId")
+        config = self._rest.config
+        params = FCOCancelRequest(
+            fco_id=fco_id,
+            device_id=get_device_id(),
+            user_agent=config.user_agent,
+            code=code,
+        )
         content, sig = _sign_and_encode(params, self._rest.get_private_key())
         data = self._rest.delete(
             EP_TRADING_FCO_ORDER,
