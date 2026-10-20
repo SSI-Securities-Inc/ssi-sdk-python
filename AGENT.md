@@ -114,7 +114,7 @@ config = Config(client_id="...", api_key="...", api_secret="...",
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `api_url` / `streaming_url` / `trading_api_domain` / `trading_ws_domain` | `https://api.ssi.com.vn` / `wss://stream.ssi.com.vn/ws/v3` / `https://api.ssi.com.vn` / `wss://api.ssi.com.vn/ws/v3/trading` | the four endpoints, all written as full URLs. `Config.trading_api_url` = host of `/api/v3/trading/*` and `/api/v3/account/*` (follows `api_url` while `trading_api_domain` is left at the default; auth and data always use `api_url`). `Config.trading_ws_url` = the trading WS URL (experimental). A bare `host[:port]` is accepted for both and gets `https://` / `wss://` |
+| `api_url` / `streaming_url` / `trading_api_domain` / `trading_ws_domain` | `https://api.ssi.com.vn` / `wss://stream.ssi.com.vn/ws/v3` / `https://api.ssi.com.vn` / `wss://api.ssi.com.vn/ws/v3/trading` | the four endpoints, all written as full URLs. `Config.trading_api_url` = host of `/api/v3/trading/*` and `/api/v3/account/*` (follows `api_url` while `trading_api_domain` is left at the default; auth and data always use `api_url`). `Config.trading_ws_url` = the trading WS URL. A bare `host[:port]` is accepted for both and gets `https://` / `wss://` |
 | `api_key`, `api_secret`, `private_key`, `client_id` | `""` | credentials; `private_key` signs orders |
 | `user_agent` | `None` | HTTP + order payload User-Agent (a browser-like default is kept for WAF reasons) |
 | `timeout_ms` / `max_retries` / `retry_delay_ms` | 60000 / 5 / 2000 | HTTP timeout (ms), GET retries, backoff base (ms) |
@@ -199,9 +199,9 @@ Notes: setting a callback does **not** subscribe; `on_response` receives the ser
 Connection state: `is_connected`, `reconnect_count`, `last_error`, `on_connection(ConnectionEvent)` with state
 `connected | reconnected | disconnected | failed`.
 
-**Trading WebSocket (EXPERIMENTAL)**: `from ssi_sdk.experimental import trading_ws, async_trading_ws` — signed
-order/FCO/batch/query commands over `/ws/v3/trading`, plus `subscribe_order_events`. Not part of the facades;
-the server side is not announced as released. Order calls return the `PD` ack; outcomes come as events.
+**Trading WebSocket**: `from ssi_sdk import trading_ws, async_trading_ws` — signed
+order/FCO/batch/query commands over `/ws/v3/trading`, plus `subscribe_order_events`. Not part of the facades
+(`Trading`/`Stream` never connect to it; you call it explicitly). Order calls return the `PD` ack; outcomes come as events.
 The URL is `Config.trading_ws_domain` (normalised by `Config.trading_ws_url`); tunables are keyword arguments:
 `trading_ws(auth, signature_encoding="auto", ping_interval_ms=None, ...)` (all durations are milliseconds: `request_timeout_ms`, `handshake_grace_ms`, `max_rate_limit_wait_ms`, `ping_interval_ms`). `"auto"` (default) signs as base64 (the public documentation) and, when
 the server refuses a signature (401006/401008/401013: the command was not executed), re-sends that command once as hex and remembers

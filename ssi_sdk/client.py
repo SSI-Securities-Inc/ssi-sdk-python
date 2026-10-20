@@ -21,12 +21,17 @@ Clients overview
 |               | calling ``auth.authenticate(otp=...)``.           |
 | ``AsyncStream`` | Async version of Stream.                        |
 +---------------------+---------------------------------------------------+
+| ``trading_ws`` | Trading WebSocket (order entry over a socket):    |
+|                | explicit opt-in, pass Auth after authenticating.  |
+| ``async_trading_ws`` | Async version of trading_ws.               |
++---------------------+---------------------------------------------------+
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
+from typing import Any
 
 from ssi_sdk.config import Config
 from ssi_sdk.models import OTPResponse, Token
@@ -36,7 +41,9 @@ from ssi_sdk.services.portfolio import AsyncPortfolioService, PortfolioService
 from ssi_sdk.services.streaming import AsyncStreamingService, StreamingService
 from ssi_sdk.services.token_manager import AsyncTokenManager, TokenManager
 from ssi_sdk.services.trading import AsyncTradingService, TradingService
+from ssi_sdk.services.trading_ws import AsyncTradingWSService, TradingWSService
 from ssi_sdk.transport.rest_client import AsyncRestClient, RestClient
+from ssi_sdk.transport.trading_ws import AsyncTradingWSClient, TradingWSClient
 from ssi_sdk.transport.websocket_client import AsyncWebSocketClient, WebSocketClient
 from ssi_sdk.utils.logger import get_logger
 
@@ -695,3 +702,52 @@ class Stream:
     def __exit__(self, *exc: object) -> None:
         """Exit the context manager, disconnecting the WebSocket stream."""
         self.streaming.disconnect()
+
+
+# -- trading WebSocket (explicit opt-in; Trading/Stream never connect to it) --
+
+
+async def async_trading_ws(auth: AsyncAuth, **options: Any) -> AsyncTradingWSService:
+    """Connect an async trading WebSocket using the token and keys of ``auth``.
+
+    The URL comes from ``Config.trading_ws_domain`` (the one trading-WS setting; everything else
+    is the shared ``Config``). ``options`` are the optional keyword arguments of
+    :class:`AsyncTradingWSClient`: ``signature_encoding`` (``"auto"``/``"base64"``/``"hex"``),
+    ``request_timeout_ms``, ``user_agent``, ``handshake_grace_ms``, ``respect_rate_limit``,
+    ``max_rate_limit_wait_ms``,
+    ``ping_interval_ms`` (all durations in milliseconds).
+
+    The returned service has a ``close()`` coroutine (and an ``on_event`` hook on ``.client``).
+
+    Raises:
+        TradingWSError: If the server refuses the connection after the upgrade (401/403/429/500).
+    """
+    config = auth.config
+    options.setdefault("request_timeout_ms", float(config.timeout_ms or 10_000))
+    options.setdefault("user_agent", config.user_agent)
+    client = AsyncTradingWSClient(
+        config.trading_ws_url,
+        auth.token_manager.ensure_authenticated,
+        config.private_key,
+        **options,
+    )
+    await client.connect()
+    return AsyncTradingWSService(client, config)
+
+
+def trading_ws(auth: Auth, **options: Any) -> TradingWSService:
+    """Connect a sync trading WebSocket using the token and keys of ``auth``.
+
+    Same ``options`` as :func:`async_trading_ws`; the URL is ``Config.trading_ws_url``.
+    """
+    config = auth.config
+    options.setdefault("request_timeout_ms", float(config.timeout_ms or 10_000))
+    options.setdefault("user_agent", config.user_agent)
+    client = TradingWSClient(
+        config.trading_ws_url,
+        auth.token_manager.ensure_authenticated,
+        config.private_key,
+        **options,
+    )
+    client.connect()
+    return TradingWSService(client, config)

@@ -1,7 +1,7 @@
-"""EXPERIMENTAL: order entry and queries over the trading WebSocket (async and sync).
+"""Order entry and queries over the trading WebSocket (async and sync).
 
-Not part of the ``Trading``/``Stream`` facades: the server side is not announced as released.
-See ``ssi_sdk.transport.trading_ws`` for the protocol rules.
+Not part of the ``Trading``/``Stream`` facades; connect with ``ssi_sdk.trading_ws`` /
+``ssi_sdk.async_trading_ws``. See ``ssi_sdk.transport.trading_ws`` for the protocol rules.
 
 Scopes the token needs: ``tradingws:order:post`` / ``:put`` / ``:delete`` (place / amend /
 cancel, batch), ``tradingws:fco:post`` / ``:delete`` / ``:get`` (conditional orders) and
@@ -82,7 +82,7 @@ def _as_dict(value: Any) -> dict:
 
 
 class AsyncTradingWSService:
-    """Order entry and queries over the trading WebSocket (async). EXPERIMENTAL.
+    """Order entry and queries over the trading WebSocket (async).
 
     Builds the same validated payloads as the REST ``TradingService`` (device id from
     ``Config``, idempotency key, decimal prices) and sends them as signed commands. Order
@@ -621,7 +621,7 @@ class AsyncTradingWSService:
         return await self._ws.request("query.orderBook", params)
 
 class TradingWSService:
-    """Order entry and queries over the trading WebSocket (sync). EXPERIMENTAL.
+    """Order entry and queries over the trading WebSocket (sync).
 
     Builds the same validated payloads as the REST ``TradingService`` (device id from
     ``Config``, idempotency key, decimal prices) and sends them as signed commands. Order

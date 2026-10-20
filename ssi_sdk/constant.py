@@ -46,7 +46,7 @@ DEFAULT_STREAMING_URL = "wss://stream.ssi.com.vn/ws/v3"
 # Paths served by the trading API (orders, FCO, account, portfolio). They go to
 # ``Config.trading_api_url``, which is ``api_url`` unless ``trading_api_domain`` is set.
 TRADING_API_PATH_PREFIXES = ("/api/v3/trading", "/api/v3/account")
-# Trading WebSocket (order entry over a socket). Experimental; nothing in the facade clients
+# Trading WebSocket (order entry over a socket). Nothing in the facade clients
 # connects to it. Its domain differs from the market-data stream (SSI developer portal,
 # "Kết nối WebSocket API": wss://api.ssi.com.vn/ws/v3/trading), so it has its own setting.
 TRADING_WS_PATH = "/ws/v3/trading"
@@ -102,6 +102,12 @@ EP_DATA_INDEX_LIST = "/api/v3/data/indexList"
 EP_DATA_INDEX_SUMMARY = "/api/v3/data/indexSummary"
 EP_DATA_SECURITIES_BY_BOARD = "/api/v3/data/securitiesByBoard"
 EP_DATA_SECURITIES_SUMMARY = "/api/v3/data/securitiesSummary"
+EP_DATA_CORPORATE_ACTIONS = "/api/v3/data/corporateActions"
+
+# corporateActions: the span of one request is capped at 5 days, pageSize must be one of these, language is vn or en.
+CORPORATE_ACTIONS_MAX_DAYS = 5
+CORPORATE_ACTIONS_PAGE_SIZES = (10, 20, 50, 100)
+CORPORATE_ACTIONS_LANGUAGES = ("vn", "en")
 
 # ---------------------------------------------------------------------------
 # API Endpoints — Trading
