@@ -10,6 +10,8 @@ from ssi_sdk.client import (
     Data,
     Stream,
     Trading,
+    async_trading_ws,
+    trading_ws,
 )
 from ssi_sdk.config import Config
 from ssi_sdk.exceptions import (
@@ -25,6 +27,12 @@ from ssi_sdk.exceptions import (
     ValidationError,
     WebSocketError,
 )
+from ssi_sdk.services.trading_ws import AsyncTradingWSService, TradingWSService
+from ssi_sdk.transport.trading_ws import (
+    AsyncTradingWSClient,
+    TradingWSClient,
+    TradingWSResponse,
+)
 
 __all__ = [
     "__version__",
@@ -37,6 +45,14 @@ __all__ = [
     "Trading",
     "AsyncStream",
     "Stream",
+    # Trading WebSocket (explicit opt-in)
+    "trading_ws",
+    "async_trading_ws",
+    "TradingWSService",
+    "AsyncTradingWSService",
+    "TradingWSClient",
+    "AsyncTradingWSClient",
+    "TradingWSResponse",
     # Config
     "Config",
     # Exceptions

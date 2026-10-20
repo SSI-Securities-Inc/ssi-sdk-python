@@ -17,6 +17,11 @@ def _to_board(raw: Any) -> Board | str | None:
     return Board.from_value(raw) or str(raw)
 
 
+def _text(value: Any) -> str:
+    """Server text field -> str; a missing or null field becomes ``""``."""
+    return "" if value is None else str(value)
+
+
 def _blank_to_none(value: Any) -> Any:
     """Map the server's empty-string "no value" marker to None."""
     return None if value is None or (isinstance(value, str) and not value.strip()) else value
@@ -491,6 +496,83 @@ class MasterData:
                 ceiling=to_number(item.get("ceiling", 0.0)),
                 floor=to_number(item.get("floor", 0.0)),
                 ref_price=to_number(item.get("refPrice", 0.0)),
+            )
+            for item in data
+        ]
+
+
+@dataclass
+class CorporateActionsRequest:
+    """Corporate actions request.
+
+    Attributes:
+        from_date: Start date ``YYYY/MM/DD``.
+        to_date: End date ``YYYY/MM/DD`` (at most 5 days after ``from_date``).
+        symbol: Ticker symbol; ``None`` asks for every security.
+        language: ``"vn"`` or ``"en"``.
+        page: 1-based page number.
+        size: Page size; the server accepts 10, 20, 50 or 100.
+    """
+
+    from_date: str
+    to_date: str
+    symbol: str | None = None
+    language: str = "vn"
+    page: int = DEFAULT_PAGE
+    size: int = 100
+
+    def to_dict(self) -> dict:
+        """Convert the request to the endpoint's query keys (``symbol`` only when set)."""
+        data: dict[str, Any] = {
+            "from": self.from_date,
+            "to": self.to_date,
+            "language": self.language,
+            "pageIndex": self.page,
+            "pageSize": self.size,
+        }
+        if self.symbol is not None:
+            data["symbol"] = self.symbol
+        return data
+
+
+@dataclass
+class CorporateAction:
+    """One corporate action (dividend, bonus shares, rights issue, ...) of a security.
+
+    Every field is the string the server sends: dates stay ``YYYY/MM/DD`` text and ``ratio``
+    is not parsed, because its meaning depends on the event type. A field the server leaves
+    blank (a newly announced event has no ex-right date or ratio yet) is ``""``.
+
+    Attributes:
+        symbol: Ticker symbol.
+        event_title: Event name.
+        exright_date: Ex-right date.
+        record_date: Record date.
+        issue_date: Issue date.
+        exchange: Exchange code, e.g. ``"HOSE"``.
+        ratio: Event ratio as text, e.g. ``"0.9388"``.
+    """
+
+    symbol: str
+    event_title: str
+    exright_date: str
+    record_date: str
+    issue_date: str
+    exchange: str
+    ratio: str
+
+    @classmethod
+    def from_list(cls, data: list[dict]) -> list[CorporateAction]:
+        """Build a list of CorporateAction from the ``data`` rows of the API response."""
+        return [
+            cls(
+                symbol=_text(item.get("symbol")),
+                event_title=_text(item.get("eventTitle")),
+                exright_date=_text(item.get("exrightDate")),
+                record_date=_text(item.get("recordDate")),
+                issue_date=_text(item.get("issueDate")),
+                exchange=_text(item.get("exchange")),
+                ratio=_text(item.get("ratio")),
             )
             for item in data
         ]

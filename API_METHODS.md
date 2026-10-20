@@ -40,6 +40,8 @@ Reach it through `data.market_data`. Every method below exists in a sync class (
 | `get_board_summary_historical` | `(board: Board, trading_date: str) -> MarketIndexSummary \| None` | Get the summary for an exchange board on a specific trading date. |
 | `get_index_summary` | `(index: str) -> MarketIndexSummary \| None` | Get the latest summary for an index. |
 | `get_index_summary_historical` | `(index: str, trading_date: str) -> MarketIndexSummary \| None` | Get the summary for an index on a specific trading date. |
+| `get_corporate_actions` | `(symbol: str \| None = None, language: str = "vn") -> list[CorporateAction]` | Get today's corporate actions (dividends, bonus shares, rights issues, ...). |
+| `get_corporate_actions_historical` | `(from_date: str, to_date: str, symbol: str \| None = None, language: str = "vn") -> list[CorporateAction]` | Get corporate actions in a past date range (at most 5 days). |
 | `get_indexes` | `() -> list[MarketIndexes]` | Get all market indexes. |
 | `get_indexes_by_board` | `(board: Board) -> list[MarketIndexes]` | Get market indexes for a specific exchange board. |
 | `get_master_data` | `() -> list[MasterData]` | Get today's reference price data (ceiling/floor/reference) for all symbols. |
@@ -215,9 +217,9 @@ Properties and callbacks (assign a function to `on_*`):
 | `on_trading` | Get the current callback for trading messages. |
 | `reconnect_count` | How many times the socket was re-opened after a drop. |
 
-## Trading WebSocket (EXPERIMENTAL)
+## Trading WebSocket
 
-Reach it through `ssi_sdk.experimental.trading_ws(auth)` / `async_trading_ws(auth)`. Every method below exists in a sync class (`TradingWSService`) and an async class (`AsyncTradingWSService`) with the same name and arguments; in the async class call it with `await`.
+Reach it through `ssi_sdk.trading_ws(auth)` / `async_trading_ws(auth)`. Every method below exists in a sync class (`TradingWSService`) and an async class (`AsyncTradingWSService`) with the same name and arguments; in the async class call it with `await`.
 
 | Method | Arguments | What it does |
 |---|---|---|

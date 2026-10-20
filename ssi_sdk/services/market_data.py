@@ -8,8 +8,12 @@ from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
 
 from ssi_sdk.constant import (
+    CORPORATE_ACTIONS_LANGUAGES,
+    CORPORATE_ACTIONS_MAX_DAYS,
+    CORPORATE_ACTIONS_PAGE_SIZES,
     DEFAULT_PAGE,
     DEFAULT_SIZE,
+    EP_DATA_CORPORATE_ACTIONS,
     EP_DATA_INDEX_LIST,
     EP_DATA_INDEX_SUMMARY,
     EP_DATA_MASTER_DATA,
@@ -20,6 +24,8 @@ from ssi_sdk.constant import (
 from ssi_sdk.enums import ALLOWED_TIMEFRAMES, Board, Timeframe
 from ssi_sdk.exceptions import APIError, ValidationError
 from ssi_sdk.models import (
+    CorporateAction,
+    CorporateActionsRequest,
     MarketIndexes,
     MarketIndexesRequest,
     MarketIndexSummary,
@@ -288,6 +294,36 @@ def _check_page_size(size: int) -> int:
     """Page size must be positive, or an iterate-until-short-page loop never ends."""
     require_positive(size, "size")
     return size
+
+
+def _build_corporate_actions_params(
+    from_date: str,
+    to_date: str,
+    symbol: str | None,
+    language: str,
+    page: int,
+    size: int,
+) -> dict:
+    """Build and validate the corporate actions query params (limits as the server documents them)."""
+    require_date_range(from_date, to_date, max_days=CORPORATE_ACTIONS_MAX_DAYS)
+    if symbol is not None:
+        require_symbol(symbol)
+        if len(symbol) > 20:
+            raise ValidationError(f"symbol must be at most 20 characters, got {len(symbol)}")
+    language = language.strip().lower() if isinstance(language, str) else language
+    if language not in CORPORATE_ACTIONS_LANGUAGES:
+        raise ValidationError(f"language must be one of {', '.join(CORPORATE_ACTIONS_LANGUAGES)}, got '{language}'")
+    require_positive(page, "page")
+    if size not in CORPORATE_ACTIONS_PAGE_SIZES:
+        raise ValidationError(f"size must be one of {', '.join(map(str, CORPORATE_ACTIONS_PAGE_SIZES))}, got {size}")
+    return CorporateActionsRequest(
+        from_date=from_date, to_date=to_date, symbol=symbol, language=language, page=page, size=size
+    ).to_dict()
+
+
+def _parse_corporate_actions(data) -> list[CorporateAction]:
+    """Parse the raw corporate actions payload into a list of CorporateAction."""
+    return CorporateAction.from_list(_data_rows(data, "corporate actions"))
 
 
 # ── async class ──────────────────────────────────────────────
@@ -1009,6 +1045,61 @@ class AsyncMarketDataService:
         require_non_empty(to_date, "toDate")
         return await self._get_master_data(from_date, to_date)
 
+    # -- Corporate actions -----------------------------------------------
+
+    async def _get_corporate_actions(
+        self, from_date: str, to_date: str, symbol: str | None, language: str
+    ) -> list[CorporateAction]:
+        """Fetch every page of corporate actions for a date range and return the combined list."""
+        page = DEFAULT_PAGE
+        items: list[CorporateAction] = []
+        while True:
+            params = _build_corporate_actions_params(
+                from_date, to_date, symbol, language, page, max(CORPORATE_ACTIONS_PAGE_SIZES)
+            )
+            data = await self._rest.get(EP_DATA_CORPORATE_ACTIONS, params=params)
+            items.extend(_parse_corporate_actions(data))
+            if page >= _pages_count(data):
+                break
+            page += 1
+        return items
+
+    async def get_corporate_actions(self, symbol: str | None = None, language: str = "vn") -> list[CorporateAction]:
+        """Get today's corporate actions (dividends, bonus shares, rights issues, ...).
+
+        The API paginates this endpoint; this method fetches every page internally.
+
+        Args:
+            symbol: One ticker symbol, or ``None`` for every security.
+            language: ``"vn"`` (default) or ``"en"``.
+        Returns:
+            List of corporate actions whose date range is today.
+        Raises:
+            ValidationError: If symbol or language is not valid.
+        """
+        today = today_date_str()
+        return await self._get_corporate_actions(today, today, symbol, language)
+
+    async def get_corporate_actions_historical(
+        self, from_date: str, to_date: str, symbol: str | None = None, language: str = "vn"
+    ) -> list[CorporateAction]:
+        """Get corporate actions in a past date range.
+
+        The API paginates this endpoint; this method fetches every page internally.
+
+        Args:
+            from_date: Start date "YYYY/MM/DD".
+            to_date: End date "YYYY/MM/DD"; at most 5 days after ``from_date``.
+            symbol: One ticker symbol, or ``None`` for every security.
+            language: ``"vn"`` (default) or ``"en"``.
+        Returns:
+            List of corporate actions in the date range.
+        Raises:
+            ValidationError: If a date is malformed, from_date is after to_date, the range is over
+                5 days, or symbol / language is not valid.
+        """
+        return await self._get_corporate_actions(from_date, to_date, symbol, language)
+
 
 # ── sync class ───────────────────────────────────────────────
 
@@ -1726,3 +1817,58 @@ class MarketDataService:
         require_non_empty(from_date, "fromDate")
         require_non_empty(to_date, "toDate")
         return self._get_master_data(from_date, to_date)
+
+    # -- Corporate actions -----------------------------------------------
+
+    def _get_corporate_actions(
+        self, from_date: str, to_date: str, symbol: str | None, language: str
+    ) -> list[CorporateAction]:
+        """Fetch every page of corporate actions for a date range and return the combined list."""
+        page = DEFAULT_PAGE
+        items: list[CorporateAction] = []
+        while True:
+            params = _build_corporate_actions_params(
+                from_date, to_date, symbol, language, page, max(CORPORATE_ACTIONS_PAGE_SIZES)
+            )
+            data = self._rest.get(EP_DATA_CORPORATE_ACTIONS, params=params)
+            items.extend(_parse_corporate_actions(data))
+            if page >= _pages_count(data):
+                break
+            page += 1
+        return items
+
+    def get_corporate_actions(self, symbol: str | None = None, language: str = "vn") -> list[CorporateAction]:
+        """Get today's corporate actions (dividends, bonus shares, rights issues, ...).
+
+        The API paginates this endpoint; this method fetches every page internally.
+
+        Args:
+            symbol: One ticker symbol, or ``None`` for every security.
+            language: ``"vn"`` (default) or ``"en"``.
+        Returns:
+            List of corporate actions whose date range is today.
+        Raises:
+            ValidationError: If symbol or language is not valid.
+        """
+        today = today_date_str()
+        return self._get_corporate_actions(today, today, symbol, language)
+
+    def get_corporate_actions_historical(
+        self, from_date: str, to_date: str, symbol: str | None = None, language: str = "vn"
+    ) -> list[CorporateAction]:
+        """Get corporate actions in a past date range.
+
+        The API paginates this endpoint; this method fetches every page internally.
+
+        Args:
+            from_date: Start date "YYYY/MM/DD".
+            to_date: End date "YYYY/MM/DD"; at most 5 days after ``from_date``.
+            symbol: One ticker symbol, or ``None`` for every security.
+            language: ``"vn"`` (default) or ``"en"``.
+        Returns:
+            List of corporate actions in the date range.
+        Raises:
+            ValidationError: If a date is malformed, from_date is after to_date, the range is over
+                5 days, or symbol / language is not valid.
+        """
+        return self._get_corporate_actions(from_date, to_date, symbol, language)

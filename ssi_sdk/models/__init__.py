@@ -28,6 +28,8 @@ from ssi_sdk.models.fco import (
     TrailingStopParams,
 )
 from ssi_sdk.models.market_data import (
+    CorporateAction,
+    CorporateActionsRequest,
     DownloadData,
     DownloadDataRequest,
     MarketIndexes,
@@ -130,6 +132,8 @@ __all__ = [
     "SecuritiesSummaryRequest",
     "MasterDataRequest",
     "MasterData",
+    "CorporateActionsRequest",
+    "CorporateAction",
     # -------------------------------------------------------------------------
     # Portfolio models
     # -------------------------------------------------------------------------

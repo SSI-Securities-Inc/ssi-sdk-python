@@ -8,6 +8,30 @@ duration renames in 3.3.0 (see the table below): they have no alias on purpose, 
 would silently become 30 ms instead of 30 s.
 
 
+## 3.3.2 - 2026-10-20
+
+### Changed - BREAKING: Trading WebSocket is no longer experimental
+The Trading WebSocket is now part of the public API and is exported from the package root. The
+`ssi_sdk.experimental` module was removed **without an alias or deprecated re-export**: the old import
+raises `ModuleNotFoundError`. Names, signatures, defaults and behaviour are unchanged (still an explicit
+opt-in call; `Trading`/`Stream` do not connect to it).
+
+- Old: `from ssi_sdk.experimental import trading_ws, async_trading_ws, TradingWSClient, ...`
+- New: `from ssi_sdk import trading_ws, async_trading_ws, TradingWSClient, ...`
+
+```python
+# before: from ssi_sdk.experimental import trading_ws
+from ssi_sdk import trading_ws
+ws = trading_ws(auth)
+```
+
+### Added
+- Corporate actions (`GET /api/v3/data/corporateActions`) as two `MarketData` methods: `get_corporate_actions(symbol=None, language="vn")` for today and
+  `get_corporate_actions_historical(from_date, to_date, symbol=None, language="vn")` for a past range (the server allows at most 5 days per request).
+  Both fetch every page and return `list[CorporateAction]` (`symbol`, `event_title`, `exright_date`, `record_date`, `issue_date`, `exchange`, `ratio`, all
+  strings as the server sends them). Checked on the client before any call: date format, `from <= to`, 5-day span, symbol, language.
+  Written from the official API doc; not yet run against the live server.
+
 ## 3.3.0 - 2026-10-08
 
 ### Changed - BREAKING: every public duration is in milliseconds
@@ -86,9 +110,9 @@ Token `expiresAt` stays epoch seconds, as the server sends it.
 - Helpers in `ssi_sdk.utils`: `pick`, `is_no_content`, `to_opt_int`, `to_opt_float`, `to_decimal`,
   `to_enum`, `to_price_decimal`, `format_price`, `parse_date`, `require_symbol`,
   `require_date_range`, `require_exactly_one`, `ssi_sdk.utils.redact` (module) and `ssi_sdk.utils.topic` (module).
-- EXPERIMENTAL Trading WebSocket (`ssi_sdk.experimental`: `trading_ws`, `async_trading_ws`, `TradingWSClient`,
+- Trading WebSocket (then in `ssi_sdk.experimental`, now `ssi_sdk`; see Unreleased: `trading_ws`, `async_trading_ws`, `TradingWSClient`,
   `AsyncTradingWSClient`, `TradingWSError`): signed order/FCO commands over `Config.trading_ws_url`.
-  Not exported from `ssi_sdk` and not used by `Trading`/`Stream`.
+  Not used by `Trading`/`Stream`.
   Aligned with the public Trading WS documentation: the only config is `Config.trading_ws_domain`
   (everything else is the shared `Config`); optional client keywords `signature_encoding`
   (`"base64"` per the documentation, `"hex"` as REST uses; a 401013 error message hints at the

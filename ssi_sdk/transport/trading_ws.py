@@ -1,8 +1,7 @@
-"""EXPERIMENTAL: client for the trading WebSocket (``/ws/v3/trading``): orders over a socket.
+"""Client for the trading WebSocket (``/ws/v3/trading``): orders over a socket.
 
-The server side (``FastConnect.Trading.StreamApi``) has not been announced as released, so this
-module is not wired into the ``Trading``/``Stream`` facades; use it only against an
-environment you were told supports it. Frame format::
+It is not wired into the ``Trading``/``Stream`` facades; connect explicitly with
+``ssi_sdk.trading_ws`` / ``ssi_sdk.async_trading_ws``. Frame format::
 
     {"id": "<non-empty>", "method": "order.place", "params": {...},
      "signature": "<base64 or hex>", "timestamp": <epoch ms>}
@@ -232,7 +231,7 @@ def _decode(raw: Any) -> dict[str, Any] | None:
 
 
 class AsyncTradingWSClient:
-    """Async client for the trading WebSocket (EXPERIMENTAL, see the module docstring)."""
+    """Async client for the trading WebSocket (see the module docstring)."""
 
     def __init__(
         self,
@@ -552,7 +551,7 @@ class AsyncTradingWSClient:
 
 
 class TradingWSClient:
-    """Synchronous client for the trading WebSocket (EXPERIMENTAL, see the module docstring)."""
+    """Synchronous client for the trading WebSocket (see the module docstring)."""
 
     def __init__(
         self,

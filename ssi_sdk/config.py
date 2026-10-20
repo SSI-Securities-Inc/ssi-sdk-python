@@ -45,7 +45,7 @@ class Config:
             (so changing only ``api_url`` moves trading too); set another host to split them.
             Empty means the same, and a bare ``host[:port]`` gets ``https://``. Auth and market data
             always use ``api_url``. Change it if SSI moves trading to another domain.
-        trading_ws_domain: URL of the experimental trading WebSocket, like ``streaming_url`` with
+        trading_ws_domain: URL of the trading WebSocket, like ``streaming_url`` with
             its ``wss://`` (default ``wss://api.ssi.com.vn/ws/v3/trading``; its host differs from
             ``streaming_url``'s). A bare ``host[:port]`` gets ``wss://`` and ``/ws/v3/trading``;
             a URL without a path gets the path. Change it if SSI renames the domain.

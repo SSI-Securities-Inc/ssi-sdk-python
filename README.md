@@ -59,7 +59,7 @@ config = Config(
 | `api_url` | `str` | `"https://api.ssi.com.vn"` | URL REST API |
 | `streaming_url` | `str` | `"wss://stream.ssi.com.vn/ws/v3"` | URL WebSocket streaming |
 | `trading_api_domain` | `str` | `"https://api.ssi.com.vn"` | URL của **REST API giao dịch** (đặt lệnh, FCO, tài khoản, danh mục: `/api/v3/trading/*`, `/api/v3/account/*`), cùng kiểu với `api_url`. Giữ mặc định thì **theo `api_url`** (đổi `api_url` sang môi trường khác là trading đi theo); đặt host khác để tách riêng. Auth và dữ liệu thị trường luôn dùng `api_url`. Chấp nhận cả `host`/`host:port` (tự thêm `https://`). Token và rate limit dùng chung. URL thực tế: `Config.trading_api_url` |
-| `trading_ws_domain` | `str` | `"wss://api.ssi.com.vn/ws/v3/trading"` | URL WebSocket đặt lệnh (thử nghiệm), cùng kiểu với `streaming_url`. Đổi khi server đổi tên miền; chấp nhận cả `host`/`host:port` (tự thêm `wss://` và `/ws/v3/trading`). URL thực tế: `Config.trading_ws_url`. Mọi cấu hình khác dùng chung `Config` |
+| `trading_ws_domain` | `str` | `"wss://api.ssi.com.vn/ws/v3/trading"` | URL WebSocket đặt lệnh, cùng kiểu với `streaming_url`. Đổi khi server đổi tên miền; chấp nhận cả `host`/`host:port` (tự thêm `wss://` và `/ws/v3/trading`). URL thực tế: `Config.trading_ws_url`. Mọi cấu hình khác dùng chung `Config` |
 | `timeout_ms` | `int` | `60000` | Timeout request (mili-giây) |
 | `max_retries` | `int` | `5` | Số lần retry tối đa |
 | `retry_delay_ms` | `int` | `2000` | Delay cơ sở giữa các lần retry (exponential backoff, mili-giây) |
@@ -380,6 +380,8 @@ Truy cập qua `data.market_data` (client `Data` / `AsyncData`).
 | | `get_securities_summary_by_index_historical(index, from_date, to_date)` | Summary chỉ số lịch sử |
 | **Master Data** | `get_master_data()` | Giá trần/sàn/tham chiếu tất cả mã hôm nay |
 | | `get_master_data_historical(from_date, to_date)` | Giá trần/sàn/tham chiếu tất cả mã trong khoảng ngày |
+| **Corporate Actions** | `get_corporate_actions(symbol=None, language="vn")` | Sự kiện quyền (cổ tức, thưởng, phát hành...) hôm nay |
+| | `get_corporate_actions_historical(from_date, to_date, symbol=None, language="vn")` | Sự kiện quyền trong khoảng ngày (tối đa 5 ngày) |
 
 ### 3.1. Dữ liệu OHLC (nến)
 
@@ -559,6 +561,31 @@ for item in result:
 ```
 
 **Trả về:** `list[MasterData]` — mỗi `MasterData` có: `board`, `symbol`, `trading_date`, `ceiling`, `floor`, `ref_price`.
+
+### 3.7. Corporate Actions (sự kiện quyền)
+
+`GET /api/v3/data/corporateActions`. SDK tự gọi hết các trang (pageSize 100). Hai method tách theo thời điểm:
+
+```python
+# Hôm nay (mọi mã, hoặc 1 mã)
+today = data.market_data.get_corporate_actions()
+gda = data.market_data.get_corporate_actions(symbol="GDA", language="en")
+
+# Quá khứ: khoảng ngày tối đa 5 ngày
+past = data.market_data.get_corporate_actions_historical(
+    from_date="2026/10/08",
+    to_date="2026/10/12",
+    symbol=None,       # None = tất cả mã
+    language="vn",     # "vn" (mặc định) hoặc "en"
+)
+for e in past:
+    print(e.symbol, e.event_title, e.exright_date, e.record_date, e.issue_date, e.exchange, e.ratio)
+```
+
+**Trả về:** `list[CorporateAction]` — `symbol`, `event_title`, `exright_date`, `record_date`, `issue_date`, `exchange`, `ratio`.
+Tất cả là `str` đúng như server trả (ngày `YYYY/MM/DD`, `ratio` không ép kiểu); sự kiện mới công bố có thể có `exright_date` / `ratio` rỗng `""`.
+SDK kiểm tra trước khi gọi: ngày đúng `YYYY/MM/DD`, `from <= to`, khoảng tối đa 5 ngày, `symbol` chữ-số tối đa 20 ký tự, `language` là `vn`/`en`
+(sai thì `ValidationError`, không gọi mạng).
 
 ---
 
@@ -1231,14 +1258,13 @@ stream.streaming.ping()
 stream.streaming.ping(interval_ms=30_000)
 ```
 
-### 6.7. Đặt lệnh qua WebSocket (thử nghiệm)
+### 6.7. Đặt lệnh qua WebSocket
 
-> **Thử nghiệm.** Server (`FastConnect.Trading.StreamApi`, `/ws/v3/trading`) chưa được công bố
-> release, nên tính năng này **không** nằm trong `Trading`/`Stream` và không export từ `ssi_sdk`.
-> Chỉ dùng với môi trường đã được xác nhận hỗ trợ. URL lấy từ `Config.trading_ws_url` (domain: `Config.trading_ws_domain`).
+> Tính năng này **không** nằm trong `Trading`/`Stream`: bạn gọi `trading_ws(auth)` /
+> `async_trading_ws(auth)` (export từ `ssi_sdk`) một cách tường minh. URL lấy từ `Config.trading_ws_url` (domain: `Config.trading_ws_domain`).
 
 ```python
-from ssi_sdk.experimental import trading_ws          # async: async_trading_ws
+from ssi_sdk import trading_ws                       # async: async_trading_ws
 
 ws = trading_ws(auth)                                # kết nối wss, token ở header
 ack = ws.place_order("1234561", "SSI", OrderSide.BUY, 100, 66000, OrderType.LO,
@@ -1429,7 +1455,7 @@ orders: list[BatchPlaceOrderItem] = [
 | `get_ohlc_1week_historical` / `get_ohlc_1month_historical` | server không hỗ trợ — ném `ValidationError` |
 
 **Chưa hỗ trợ:** tải OHLC hàng loạt (`download_ohlc_1minute`, `download_ohlc_1day`: luôn ném `NotImplementedError`, server chưa có endpoint `data/file`).
-Trading WebSocket (`/ws/v3/trading`) có ở dạng thử nghiệm: mục 6.7.
+Trading WebSocket (`/ws/v3/trading`): xem mục 6.7.
 
 ---
 
