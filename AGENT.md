@@ -238,17 +238,65 @@ HTTP 200 with a `{code, msg}` body whose code is not 200/204 is an `APIError` to
 
 ---
 
-## 7. Where things live
+## 3. Public API Cheatsheet for AI Agents
 
-| Task | Files |
-|------|-------|
-| new REST method | `services/<area>.py` (sync **and** `Async*`), models in `models/<area>.py`, endpoint in `constant.py` |
-| response parsing | `models/*.from_dict` + helpers in `utils/converter.py` |
-| input validation | `utils/validator.py`, service `_build_*` functions |
-| streaming topic / message | `utils/topic.py`, `models/streaming.py`, `services/streaming.py` (`_parse_data_message`, `_parse_trading_message`) |
-| reconnect / frame routing | `transport/reconnect.py`, `transport/dispatch.py`, `transport/websocket_client.py` |
-| error mapping | `transport/rest_client.py::_handle_response`, `exceptions.py`, `enums/error.py` |
-| signing | `utils/crypto.py` (RSA PKCS#1 v1.5 / SHA-256, hex; key = base64 of XML) |
+### 3.1 Market Data (`data.market_data` / `async_data.market_data`)
+
+| Method | Parameters | Return Type | Description |
+|--------|------------|-------------|-------------|
+| `get_ohlc` | `symbol`, `from_date`, `to_date`, `resolution`, `page_index`, `page_size` | `OHLCData` | Query candle OHLCV data |
+| `get_market_indexes` | `index_id` | `MarketIndexes` | Get list of market indexes |
+| `get_market_index_summary` | `index_id`, `from_date`, `to_date`, `page_index`, `page_size` | `MarketIndexSummary` | Summary metrics for an index |
+| `get_securities_info` | `symbol`, `market`, `page_index`, `page_size` | `SecuritiesInfo` | Security details (listed shares, lot size, etc.) |
+| `get_securities_summary` | `symbol`, `market`, `page_index`, `page_size` | `SecuritiesSummary` | Summary of stock transactions |
+
+### 3.2 Account & Portfolio (`trading.account` & `trading.portfolio`)
+
+| Service | Method | Return Type | Description |
+|---------|--------|-------------|-------------|
+| `account` | `get_account_info()` | `list[Account]` | Query list of sub-accounts |
+| `portfolio` | `get_equity_balance(account_no)` | `EquityAccountBalance` | Cash balance & debt for cash/margin account |
+| `portfolio` | `get_derivative_balance(account_no)` | `DerivativeAccountBalance` | Balance & margin for derivative account |
+| `portfolio` | `get_equity_positions(account_no)` | `list[EquityPosition]` | Equity stock holdings |
+| `portfolio` | `get_derivative_positions(account_no)` | `list[DerivativePosition]` | Derivative contract positions |
+| `portfolio` | `get_today_orders(account_no)` | `list[Order]` | Intraday orders |
+| `portfolio` | `get_historical_orders(account_no, from_date, to_date)` | `list[Order]` | Historical order book entries |
+| `portfolio` | `get_equity_ppmmr(account_no)` | `EquityPPMMR` | Purchasing power & margin ratio (Equity) |
+| `portfolio` | `get_derivative_ppmmr(account_no)` | `DerivativePPMMR` | Purchasing power & margin ratio (Derivative) |
+
+### 3.3 Standard Trading (`trading.trading`)
+
+| Method | Parameters | Return Type | Description |
+|--------|------------|-------------|-------------|
+| `place_limit_order` | `account_no`, `symbol`, `side`, `quantity`, `price` | `PlaceOrderResponse` | Place LO order |
+| `place_market_order` | `account_no`, `symbol`, `side`, `quantity` | `PlaceOrderResponse` | Place MTL market order |
+| `place_ato_order` | `account_no`, `symbol`, `side`, `quantity` | `PlaceOrderResponse` | Place ATO opening order |
+| `place_atc_order` | `account_no`, `symbol`, `side`, `quantity` | `PlaceOrderResponse` | Place ATC closing order |
+| `place_order` | `account_no`, `symbol`, `side`, `quantity`, `price`, `order_type` | `PlaceOrderResponse` | Place order with custom OrderType |
+| `modify_order_price` | `account_no`, `client_request_id`, `price` | `ModifyOrderResponse` | Modify order price by request ID |
+| `modify_order_quantity` | `account_no`, `client_request_id`, `quantity` | `ModifyOrderResponse` | Modify order quantity by request ID |
+| `cancel_order` | `account_no`, `client_request_id` | `CancelOrderResponse` | Cancel order by request ID |
+| `cancel_order_by_order_id` | `account_no`, `order_id` | `CancelOrderResponse` | Cancel order by server order ID |
+| `get_max_buy_sell` | `account_no`, `symbol`, `price` | `MaxBuySellResponse` | Max buy/sell qty at given price |
+
+### 3.4 Flexible Conditional Orders - FCO (`trading.trading`)
+
+| Method | Key Parameters | Return Type | Description |
+|--------|----------------|-------------|-------------|
+| `place_fco_gtd` | `account_no`, `symbol`, `side`, `quantity`, `price`, `price_slip`, `from_date`, `to_date` | `FCOPlaceResponse` | Good Till Date order |
+| `place_fco_stop` | `account_no`, `symbol`, `side`, `quantity`, `stop_price`, `operator`, `from_date`, `to_date` | `FCOPlaceResponse` | Stop Market order |
+| `place_fco_stop_limit` | `account_no`, `symbol`, `side`, `quantity`, `price`, `price_slip`, `stop_price`, `operator`, `from_date`, `to_date` | `FCOPlaceResponse` | Stop Limit order |
+| `place_fco_trailing_stop` | `account_no`, `symbol`, `side`, `quantity`, `active_price`, `trailing_amount`, `from_date`, `to_date` | `FCOPlaceResponse` | Trailing Stop Market |
+| `place_fco_trailing_stop_limit` | `account_no`, `symbol`, `side`, `quantity`, `active_price`, `trailing_amount`, `price_slip`, `from_date`, `to_date` | `FCOPlaceResponse` | Trailing Stop Limit |
+| `place_fco_oco` | `account_no`, `symbol`, `side`, `quantity`, `tp_active_price`, `sl_active_price`, `tp_price`, `sl_price`, `tp_slip`, `sl_slip`, `from_date`, `to_date` | `FCOPlaceResponse` | One-Cancels-the-Other |
+| `place_fco_bull_bear` | `account_no`, `symbol`, `side`, `quantity`, `price`, `price_slip`, `tp_active_price`, `sl_active_price`, `tp_price`, `sl_price`, `tp_slip`, `sl_slip`, `from_date`, `to_date` | `FCOPlaceResponse` | Bull Bear order |
+| `cancel_fco` | `fco_id` | `FCOCancelResponse` | Cancel FCO by ID |
+| `get_fco_by_account_no` | `account_no`, `page_index`, `page_size` | `FCOListResponse` | List account's FCO orders |
+| `get_fco_by_symbol` | `account_no`, `symbol`, `page_index`, `page_size` | `FCOListResponse` | Filter FCO orders by symbol |
+| `get_fco_by_status` | `account_no`, `process_status`, `page_index`, `page_size` | `FCOListResponse` | Filter FCO by status (`TRIT`, `WAIT`, etc.) |
+| `get_fco_by_date` | `account_no`, `from_date`, `to_date`, `page_index`, `page_size` | `FCOListResponse` | Filter FCO by date range |
+| `get_fco_by_id` | `account_no`, `fco_id` | `FCOInfo \| None` | Single FCO order details |
+| `get_fco_order_book` | `fco_id`, `page_index`, `page_size` | `FCOOrderBookResponse` | Execution logs of FCO |
 
 ---
 
